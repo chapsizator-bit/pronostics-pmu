@@ -798,13 +798,18 @@ def analyse_course(partants, course):
                 "erreur":  str(e),
             })
 
-    # Probabilités modèle (softmax sur les logits)
-    probs_modele_raw = softmax(logits)
+    # Probabilités modèle (softmax sur les logits avec température)
+    # T=10 : compresse l'échelle des logits pour éviter qu'un seul critère
+    # fort (ex: Forme +18) ne monopolise la softmax.
+    # Sans température, un écart de +25 logit → prob > 99.99%.
+    # Avec T=10, un bon cheval dans un champ ordinaire → 45-65%.
+    TEMPERATURE = 10.0
+    logits_tempered = [l / TEMPERATURE for l in logits]
+    probs_modele_raw = softmax(logits_tempered)
 
-    # Plafond à 80% : aucun cheval ne peut avoir >80% de prob. modèle.
-    # Si le softmax dépasse ce seuil (champ de débutants, etc.),
-    # on redistribue le surplus proportionnellement aux autres.
-    MAX_PROB = 0.80
+    # Plafond à 70% : statistiquement, même le meilleur cheval gagne rarement
+    # à plus de 65-70% dans une vraie course PMU.
+    MAX_PROB = 0.70
     probs_modele = list(probs_modele_raw)
     for _ in range(10):   # itérations pour convergence
         total_sur = sum(max(0, p - MAX_PROB) for p in probs_modele)
