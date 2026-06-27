@@ -423,8 +423,10 @@ def compute_logit(cheval, course, tous_partants, disc):
     Calcule le logit brut d'un cheval = somme pondérée de ses features.
     Ces poids s'inspirent de la littérature (Benter 1994, Bolton & Chapman 1986).
     Le marché reçoit un poids fort (~35%) car très efficient en PMU.
+    Pour les débutants (musique vide), le logit est ancré sur la cote.
     """
     music = parse_musique(cheval.get("musique"))
+    est_debutant = len(music) == 0
 
     # --- Features de forme (poids ~0.25) ---
     f_forme   = feat_forme(music)           # 0-20
@@ -437,6 +439,15 @@ def compute_logit(cheval, course, tous_partants, disc):
     cote      = safe_float((cheval.get("dernierRapportDirect") or {}).get("rapport")) or \
                 safe_float(cheval.get("coteInitiale"))
     f_marche  = clamp(1 / cote * 35, 0, 35) if cote else 0
+
+    # Pour un débutant : on neutralise la forme (inconnue) et on donne
+    # plus de poids au marché — c'est lui qui intègre l'info d'entraînement.
+    if est_debutant:
+        f_forme = f_marche * 0.4   # ancre la forme sur la cote
+        f_reg   = 0
+        f_prog  = 0
+        f_place = 0
+        f_tx_vict = 0
 
     # --- Mouvement de cote ---
     f_drift, drift_val = feat_mouvement_cote(cheval)
@@ -553,7 +564,30 @@ def analyse_course(partants, course):
             })
 
     # Probabilités modèle (softmax sur les logits)
-    probs_modele = softmax(logits)
+    probs_modele_raw = softmax(logits)
+
+    # Plafond à 80% : aucun cheval ne peut avoir >80% de prob. modèle.
+    # Si le softmax dépasse ce seuil (champ de débutants, etc.),
+    # on redistribue le surplus proportionnellement aux autres.
+    MAX_PROB = 0.80
+    probs_modele = list(probs_modele_raw)
+    for _ in range(10):   # itérations pour convergence
+        total_sur = sum(max(0, p - MAX_PROB) for p in probs_modele)
+        if total_sur < 1e-9:
+            break
+        sous_plafond = [i for i, p in enumerate(probs_modele) if p < MAX_PROB]
+        if not sous_plafond:
+            break
+        redistrib = total_sur / len(sous_plafond)
+        probs_modele = [min(p, MAX_PROB) for p in probs_modele]
+        for i in sous_plafond:
+            probs_modele[i] += redistrib
+
+    # Détecter un champ à majorité de débutants (modèle peu fiable)
+    nb_avec_musique = sum(
+        1 for p in partants if parse_musique(p.get("musique"))
+    )
+    champ_inconnu = nb_avec_musique < len(partants) * 0.5
 
     # Probabilités marché (1/cote normalisées)
     cotes_brutes = [d["cote"] for d in donnees]
@@ -567,21 +601,24 @@ def analyse_course(partants, course):
             continue
         ch      = d["cheval"]
         value   = round((pm - pmkt) * 100, 1)  # en points de %
-        # Confiance : prob modèle * qualité du signal
+        # Confiance réduite si le champ est majoritairement inconnu
         drift_bonus = d["details"].get("drift", 0)
         confiance   = round(clamp(pm * 100 + drift_bonus * 2, 0, 99), 1)
+        if champ_inconnu:
+            confiance = round(confiance * 0.6, 1)  # pénalité champ d'inconnus
 
         resultats.append({
-            "nom":        ch.get("nom", "?"),
-            "num":        ch.get("numPmu"),
-            "discipline": disc,
-            "prob":       round(pm * 100, 1),    # probabilité modèle en %
-            "prob_mkt":   round(pmkt * 100, 1),  # probabilité marché en %
-            "value":      value,
-            "confiance":  confiance,
-            "cote":       d["cote"],
-            "logit":      round(d["logit"], 1),
-            "details":    d["details"],
+            "nom":           ch.get("nom", "?"),
+            "num":           ch.get("numPmu"),
+            "discipline":    disc,
+            "prob":          round(pm * 100, 1),
+            "prob_mkt":      round(pmkt * 100, 1),
+            "value":         value,
+            "confiance":     confiance,
+            "cote":          d["cote"],
+            "logit":         round(d["logit"], 1),
+            "details":       d["details"],
+            "champ_inconnu": champ_inconnu,
         })
 
     return resultats
@@ -723,6 +760,8 @@ if st.button("🔍 Analyser les courses du jour", use_container_width=True, type
         for i, c in enumerate(gardes):
             is_fort = c["value"] >= 10 and c["confiance"] >= 75
             badge   = '<span class="badge-fort">🔥 PARI FORT</span>' if is_fort else '<span class="badge-value">⚡ VALUE</span>'
+            if c.get("champ_inconnu"):
+                badge += ' <span style="background:#1a2a1a;color:#86efac;padding:3px 10px;border-radius:6px;font-size:0.78rem;font-weight:700;display:inline-block;margin-top:6px;">⚠️ Champ d\'inconnus</span>'
             hippo   = f" · {c['hippo']}" if c.get("hippo") and c["hippo"] != "?" else ""
             d       = c.get("details", {})
 
