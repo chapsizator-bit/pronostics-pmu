@@ -2,6 +2,9 @@ import urllib.request
 import json
 import math
 import re
+import os
+import base64
+import time
 from datetime import datetime, date
 import streamlit as st
 
@@ -11,6 +14,88 @@ MIN_PROB_EDGE  = 0.03   # avantage minimum sur le marché (3 points de proba)
 MIN_CONF       = 60
 TIMEOUT        = 12
 BASE_URL       = "https://online.turfinfo.api.pmu.fr/rest/client/1/programme"
+
+# ============== JOURNAL ===================
+JOURNAL_RAW  = "https://raw.githubusercontent.com/chapsizator-bit/pronostics-pmu/main/journal.json"
+JOURNAL_API  = "https://api.github.com/repos/chapsizator-bit/pronostics-pmu/contents/journal.json"
+
+@st.cache_data(ttl=30)
+def load_journal():
+    """Charge journal.json depuis GitHub (lecture publique, pas de token)."""
+    try:
+        req = urllib.request.Request(
+            JOURNAL_RAW + "?t=" + str(int(time.time())),
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return []
+
+def save_journal(entries):
+    """Écrit journal.json dans le repo GitHub via l'API (nécessite le token)."""
+    token = os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN")
+    if not token:
+        return False, "Token GitHub introuvable"
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0",
+    }
+    # Récupérer le SHA actuel du fichier
+    sha = None
+    try:
+        req = urllib.request.Request(JOURNAL_API, headers=headers)
+        with urllib.request.urlopen(req, timeout=8) as r:
+            sha = json.loads(r.read()).get("sha")
+    except Exception:
+        pass  # fichier inexistant → sha None, GitHub créera le fichier
+    content_b64 = base64.b64encode(
+        json.dumps(entries, ensure_ascii=False, indent=2).encode()
+    ).decode()
+    payload = {"message": "journal: résultat ajouté", "content": content_b64}
+    if sha:
+        payload["sha"] = sha
+    try:
+        req2 = urllib.request.Request(
+            JOURNAL_API,
+            data=json.dumps(payload).encode(),
+            headers=headers,
+            method="PUT"
+        )
+        with urllib.request.urlopen(req2, timeout=10) as r:
+            return r.status in (200, 201), ""
+    except Exception as e:
+        return False, str(e)
+
+def journal_stats(entries):
+    """Calcule taux de réussite et ROI sur une liste d'entrées."""
+    if not entries:
+        return {}
+    total  = len(entries)
+    wins   = sum(1 for e in entries if e.get("resultat") == "gagné")
+    places = sum(1 for e in entries if e.get("resultat") == "placé")
+    pertes = total - wins - places
+    # ROI : 1 unité misée par cheval
+    #  gagné  → bénéfice = cote - 1
+    #  placé  → bénéfice = 0  (on récupère la mise)
+    #  perdu  → bénéfice = -1
+    roi_abs = sum(
+        (e.get("cote", 1) - 1) if e.get("resultat") == "gagné"
+        else (0 if e.get("resultat") == "placé" else -1)
+        for e in entries
+    )
+    return {
+        "total": total,
+        "wins": wins,
+        "places": places,
+        "pertes": pertes,
+        "taux_vict": round(wins / total * 100, 1),
+        "taux_place": round((wins + places) / total * 100, 1),
+        "roi": round(roi_abs / total * 100, 1),
+        "roi_abs": round(roi_abs, 2),
+    }
 
 # ================= API ====================
 def pmu_get(path):
@@ -1045,3 +1130,113 @@ if st.button("🔍 Analyser les courses du jour", use_container_width=True, type
 
     st.caption(f"Filtres : value ≥ {min_value}% · confiance ≥ {min_conf}%")
     st.caption(f"{len(candidats)} chevaux analysés · {len(courses)} courses")
+
+    # ========== JOURNAL DE RÉSULTATS ==========
+    st.markdown("---")
+    st.markdown("## 📓 Journal de résultats")
+
+    journal = load_journal()
+
+    tab_add, tab_stats = st.tabs(["➕ Enregistrer un résultat", "📊 Statistiques"])
+
+    with tab_add:
+        st.markdown("Après chaque course, note ici si ta sélection a gagné, été placée ou perdu.")
+        with st.form("form_journal", clear_on_submit=True):
+            col_a, col_b = st.columns(2)
+            date_val  = col_a.date_input("Date", value=date.today())
+            course_val = col_b.text_input("Course", placeholder="ex: R2C3 TROT Vincennes")
+
+            col_c, col_d, col_e = st.columns(3)
+            cheval_val  = col_c.text_input("Cheval", placeholder="ex: TOKAIDO")
+            num_val     = col_d.number_input("N°", min_value=1, max_value=30, value=1, step=1)
+            cote_val    = col_e.number_input("Cote (×)", min_value=1.0, value=5.0, step=0.5)
+
+            resultat_val = st.radio(
+                "Résultat",
+                ["gagné", "placé", "perdu"],
+                horizontal=True
+            )
+
+            submitted = st.form_submit_button("💾 Enregistrer", use_container_width=True)
+            if submitted:
+                if not cheval_val.strip():
+                    st.warning("Indique le nom du cheval.")
+                else:
+                    new_entry = {
+                        "id":       str(int(time.time())),
+                        "date":     str(date_val),
+                        "course":   course_val.strip(),
+                        "cheval":   cheval_val.strip().upper(),
+                        "num":      int(num_val),
+                        "cote":     float(cote_val),
+                        "resultat": resultat_val,
+                    }
+                    updated = journal + [new_entry]
+                    ok, err = save_journal(updated)
+                    if ok:
+                        st.success(f"✅ {new_entry['cheval']} — {resultat_val} enregistré !")
+                        load_journal.clear()
+                    else:
+                        st.error(f"❌ Sauvegarde impossible : {err or 'token GitHub manquant sur Streamlit Cloud'}")
+
+    with tab_stats:
+        if not journal:
+            st.info("Aucun résultat enregistré pour l'instant — commence par ajouter des entrées.")
+        else:
+            # ---- Stats globales ----
+            s = journal_stats(journal)
+            roi_color = "green" if s["roi"] >= 0 else "red"
+            st.markdown(f"""
+            <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px">
+              <div style="background:#1e1e2e;border-radius:12px;padding:16px 24px;text-align:center;min-width:110px">
+                <div style="font-size:1.6rem;font-weight:800">{s['total']}</div>
+                <div style="color:#94a3b8;font-size:0.8rem">Sélections</div>
+              </div>
+              <div style="background:#1e1e2e;border-radius:12px;padding:16px 24px;text-align:center;min-width:110px">
+                <div style="font-size:1.6rem;font-weight:800;color:#4ade80">{s['taux_vict']}%</div>
+                <div style="color:#94a3b8;font-size:0.8rem">Taux de victoire</div>
+              </div>
+              <div style="background:#1e1e2e;border-radius:12px;padding:16px 24px;text-align:center;min-width:110px">
+                <div style="font-size:1.6rem;font-weight:800;color:#60a5fa">{s['taux_place']}%</div>
+                <div style="color:#94a3b8;font-size:0.8rem">Taux de place</div>
+              </div>
+              <div style="background:#1e1e2e;border-radius:12px;padding:16px 24px;text-align:center;min-width:110px">
+                <div style="font-size:1.6rem;font-weight:800;color:{roi_color}">{s['roi']:+.1f}%</div>
+                <div style="color:#94a3b8;font-size:0.8rem">ROI / mise</div>
+              </div>
+              <div style="background:#1e1e2e;border-radius:12px;padding:16px 24px;text-align:center;min-width:110px">
+                <div style="font-size:1.6rem;font-weight:800;color:{roi_color}">{s['roi_abs']:+.2f}u</div>
+                <div style="color:#94a3b8;font-size:0.8rem">Bénéfice net</div>
+              </div>
+            </div>
+            <div style="color:#64748b;font-size:0.8rem">
+              ✅ {s['wins']} gagné · 🏅 {s['places']} placé · ❌ {s['pertes']} perdu
+            </div>
+            """, unsafe_allow_html=True)
+
+            # ---- Stats par semaine ----
+            st.markdown("### Par semaine")
+            semaines = {}
+            for e in journal:
+                try:
+                    d_obj = datetime.strptime(e["date"], "%Y-%m-%d").date()
+                    # Lundi de la semaine ISO
+                    lundi = d_obj - __import__('datetime').timedelta(days=d_obj.weekday())
+                    key   = str(lundi)
+                except Exception:
+                    key = "?"
+                semaines.setdefault(key, []).append(e)
+
+            for semaine in sorted(semaines.keys(), reverse=True):
+                es = semaines[semaine]
+                ss = journal_stats(es)
+                roi_c = "🟢" if ss["roi"] >= 0 else "🔴"
+                label = f"Semaine du {semaine}"
+                with st.expander(f"{roi_c} {label} — {ss['total']} sél. · ROI {ss['roi']:+.1f}%"):
+                    for e in sorted(es, key=lambda x: x.get("date",""), reverse=True):
+                        icon = "✅" if e["resultat"] == "gagné" else ("🏅" if e["resultat"] == "placé" else "❌")
+                        st.markdown(
+                            f"{icon} **{e.get('cheval','?')}** (N°{e.get('num','?')}) "
+                            f"— {e.get('course','?')} · cote {e.get('cote','?')}× "
+                            f"· {e.get('date','')}"
+                        )
