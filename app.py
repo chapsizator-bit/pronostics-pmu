@@ -1264,6 +1264,17 @@ if st.button("🔍 Analyser les courses du jour", use_container_width=True, type
                     key = "?"
                 semaines.setdefault(key, []).append(e)
 
+            # Gérer la suppression d'une entrée
+            if "supprimer_id" in st.session_state and st.session_state["supprimer_id"]:
+                id_a_sup = st.session_state.pop("supprimer_id")
+                journal_modifie = [e for e in journal if e.get("id") != id_a_sup]
+                ok, err = save_journal(journal_modifie)
+                if ok:
+                    load_journal.clear()
+                    st.rerun()
+                else:
+                    st.error(f"Erreur suppression : {err}")
+
             for semaine in sorted(semaines.keys(), reverse=True):
                 es = semaines[semaine]
                 ss = journal_stats(es)
@@ -1272,11 +1283,16 @@ if st.button("🔍 Analyser les courses du jour", use_container_width=True, type
                 with st.expander(f"{roi_c} {label} — {ss['total']} sél. · ROI {ss['roi']:+.1f}%"):
                     for e in sorted(es, key=lambda x: x.get("date",""), reverse=True):
                         icon = "✅" if e["resultat"] == "gagné" else ("🏅" if e["resultat"] == "placé" else "❌")
-                        st.markdown(
+                        col_txt, col_btn = st.columns([5, 1])
+                        col_txt.markdown(
                             f"{icon} **{e.get('cheval','?')}** (N°{e.get('num','?')}) "
-                            f"— {e.get('course','?')} · cote {e.get('cote','?')}× "
+                            f"— {e.get('course','?')} · {e.get('cote','?')}× "
                             f"· {e.get('date','')}"
                         )
+                        entry_id = e.get("id", "")
+                        if col_btn.button("🗑️", key=f"del_{entry_id}", help="Supprimer cette entrée"):
+                            st.session_state["supprimer_id"] = entry_id
+                            st.rerun()
 
             # ---- Analyse par critère ----
             entrees_avec_details = [e for e in journal if e.get("details")]
