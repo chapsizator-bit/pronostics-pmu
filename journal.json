@@ -35,5 +35,42 @@
     },
     "value": 36.2,
     "prob": 64.4
+  },
+  {
+    "id": "1782589878",
+    "date": "2026-06-27",
+    "course": "R2C7 TROT",
+    "cheval": "LORD DES FANES",
+    "num": 8,
+    "cote": 2.9,
+    "resultat": "gagné",
+    "details": {
+      "forme": 16.2,
+      "reg": 6.8,
+      "prog": -2,
+      "place": 3.7,
+      "marche": 8.6,
+      "drift": 0,
+      "classe": 0,
+      "perf_rel": 0,
+      "rk": 12.0,
+      "fraich": 0,
+      "deferre": 2,
+      "jockey": 0,
+      "trainer": 0,
+      "poids": 0,
+      "oeil": 0,
+      "dist": 0,
+      "piste": 0,
+      "terrain": 0,
+      "combo": 0,
+      "reg_cond": 0,
+      "vict_hippo": 0,
+      "vict_dist": 0,
+      "disette": 4,
+      "saison": 0
+    },
+    "value": 29.2,
+    "prob": 60.5
   }
 ]
