@@ -37,23 +37,23 @@
     "prob": 64.4
   },
   {
-    "id": "1782590001",
+    "id": "1782590020",
     "date": "2026-06-27",
-    "course": "R2C5 TROT",
-    "cheval": "LIKE A JULRY",
-    "num": 10,
-    "cote": 2.0,
-    "resultat": "perdu",
+    "course": "R2C7 TROT",
+    "cheval": "LORD DES FANES",
+    "num": 8,
+    "cote": 2.9,
+    "resultat": "gagné",
     "details": {
-      "forme": 20,
-      "reg": 5.2,
-      "prog": 0,
-      "place": 0,
-      "marche": 12.5,
+      "forme": 16.2,
+      "reg": 6.8,
+      "prog": -2,
+      "place": 3.7,
+      "marche": 8.6,
       "drift": 0,
       "classe": 0,
       "perf_rel": 0,
-      "rk": 10.7,
+      "rk": 12.0,
       "fraich": 0,
       "deferre": 2,
       "jockey": 0,
@@ -64,13 +64,13 @@
       "piste": 0,
       "terrain": 0,
       "combo": 0,
-      "reg_cond": 4,
+      "reg_cond": 0,
       "vict_hippo": 0,
       "vict_dist": 0,
       "disette": 4,
       "saison": 0
     },
-    "value": 28.0,
-    "prob": 70.0
+    "value": 29.2,
+    "prob": 60.5
   }
 ]
