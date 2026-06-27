@@ -1064,6 +1064,8 @@ if st.button("🔍 Analyser les courses du jour", use_container_width=True, type
     ]
     gardes.sort(key=lambda x: (x["value"], x["confiance"]), reverse=True)
     gardes = gardes[:max_sel]
+    # Mémoriser les sélections du jour pour le journal
+    st.session_state["gardes_du_jour"] = gardes
 
     st.divider()
 
@@ -1141,20 +1143,52 @@ if st.button("🔍 Analyser les courses du jour", use_container_width=True, type
 
     with tab_add:
         st.markdown("Après chaque course, note ici si ta sélection a gagné, été placée ou perdu.")
+
+        # Sélections du jour disponibles pour pré-remplissage
+        gardes_session = st.session_state.get("gardes_du_jour", [])
+        choix_rapides  = ["— Saisie manuelle —"] + [
+            f"N°{g['num']} {g['nom']} ({g['course']})" for g in gardes_session
+        ]
+
+        selection_rapide = st.selectbox(
+            "Cheval du jour (pré-remplissage automatique)",
+            choix_rapides
+        )
+
+        # Trouver le cheval sélectionné
+        garde_sel = None
+        if selection_rapide != "— Saisie manuelle —":
+            idx = choix_rapides.index(selection_rapide) - 1
+            if 0 <= idx < len(gardes_session):
+                garde_sel = gardes_session[idx]
+
         with st.form("form_journal", clear_on_submit=True):
             col_a, col_b = st.columns(2)
-            date_val  = col_a.date_input("Date", value=date.today())
-            course_val = col_b.text_input("Course", placeholder="ex: R2C3 TROT Vincennes")
+            date_val   = col_a.date_input("Date", value=date.today())
+            course_val = col_b.text_input(
+                "Course",
+                value=garde_sel["course"] + " " + garde_sel.get("discipline","") if garde_sel else "",
+                placeholder="ex: R2C3 TROT Vincennes"
+            )
 
             col_c, col_d, col_e = st.columns(3)
-            cheval_val  = col_c.text_input("Cheval", placeholder="ex: TOKAIDO")
-            num_val     = col_d.number_input("N°", min_value=1, max_value=30, value=1, step=1)
-            cote_val    = col_e.number_input("Cote (×)", min_value=1.0, value=5.0, step=0.5)
+            cheval_val = col_c.text_input(
+                "Cheval",
+                value=garde_sel["nom"] if garde_sel else "",
+                placeholder="ex: TOKAIDO"
+            )
+            num_val  = col_d.number_input(
+                "N°", min_value=1, max_value=30,
+                value=int(garde_sel["num"]) if garde_sel else 1, step=1
+            )
+            cote_val = col_e.number_input(
+                "Cote (×)", min_value=1.0,
+                value=float(garde_sel["cote"]) if garde_sel and garde_sel.get("cote") else 5.0,
+                step=0.5
+            )
 
             resultat_val = st.radio(
-                "Résultat",
-                ["gagné", "placé", "perdu"],
-                horizontal=True
+                "Résultat", ["gagné", "placé", "perdu"], horizontal=True
             )
 
             submitted = st.form_submit_button("💾 Enregistrer", use_container_width=True)
@@ -1170,6 +1204,9 @@ if st.button("🔍 Analyser les courses du jour", use_container_width=True, type
                         "num":      int(num_val),
                         "cote":     float(cote_val),
                         "resultat": resultat_val,
+                        "details":  garde_sel.get("details", {}) if garde_sel else {},
+                        "value":    garde_sel.get("value", 0) if garde_sel else 0,
+                        "prob":     garde_sel.get("prob", 0) if garde_sel else 0,
                     }
                     updated = journal + [new_entry]
                     ok, err = save_journal(updated)
@@ -1240,3 +1277,78 @@ if st.button("🔍 Analyser les courses du jour", use_container_width=True, type
                             f"— {e.get('course','?')} · cote {e.get('cote','?')}× "
                             f"· {e.get('date','')}"
                         )
+
+            # ---- Analyse par critère ----
+            entrees_avec_details = [e for e in journal if e.get("details")]
+            if entrees_avec_details:
+                st.markdown("### 🔬 Analyse par critère")
+                st.caption(
+                    f"Sur {len(entrees_avec_details)} sélection(s) avec données de critères. "
+                    "Taux de victoire quand ce critère était positif (> 0)."
+                )
+
+                # Tous les critères présents dans les entrées
+                tous_criteres = {
+                    "forme": "Forme", "reg": "Régularité", "prog": "Progression",
+                    "marche": "Marché", "drift": "Drift cote", "classe": "Classe",
+                    "perf_rel": "Perf. relative", "rk": "RK trot",
+                    "dist": "Distance", "piste": "Piste", "terrain": "Terrain",
+                    "combo": "Combo connexion", "reg_cond": "Rég. conditions",
+                    "fraich": "Fraîcheur", "deferre": "Déferré",
+                    "jockey": "Jockey", "trainer": "Entraîneur",
+                    "poids": "Poids", "oeil": "Œillères",
+                }
+
+                lignes = []
+                for key, label_c in tous_criteres.items():
+                    avec = [e for e in entrees_avec_details if (e["details"].get(key) or 0) > 0]
+                    if len(avec) < 2:
+                        continue
+                    wins_avec = sum(1 for e in avec if e["resultat"] == "gagné")
+                    taux = round(wins_avec / len(avec) * 100, 1)
+                    roi_c_abs = sum(
+                        (e.get("cote", 1) - 1) if e["resultat"] == "gagné"
+                        else (0 if e["resultat"] == "placé" else -1)
+                        for e in avec
+                    )
+                    roi_c_pct = round(roi_c_abs / len(avec) * 100, 1)
+                    lignes.append((label_c, len(avec), taux, roi_c_pct))
+
+                if lignes:
+                    # Trier par taux de victoire décroissant
+                    lignes.sort(key=lambda x: x[2], reverse=True)
+                    rows_html = ""
+                    for label_c, n, taux, roi_c_pct in lignes:
+                        bar_w  = int(taux)
+                        bar_col = "#4ade80" if taux >= 30 else ("#facc15" if taux >= 15 else "#f87171")
+                        roi_col = "#4ade80" if roi_c_pct >= 0 else "#f87171"
+                        rows_html += f"""
+                        <tr>
+                          <td style="padding:6px 10px;color:#e2e8f0">{label_c}</td>
+                          <td style="padding:6px 10px;color:#94a3b8;text-align:center">{n}</td>
+                          <td style="padding:6px 10px">
+                            <div style="background:#374151;border-radius:4px;height:14px;width:120px">
+                              <div style="background:{bar_col};border-radius:4px;height:14px;width:{bar_w}%"></div>
+                            </div>
+                            <span style="color:{bar_col};font-size:0.8rem;font-weight:700">{taux}%</span>
+                          </td>
+                          <td style="padding:6px 10px;color:{roi_col};font-weight:700;text-align:right">{roi_c_pct:+.1f}%</td>
+                        </tr>"""
+
+                    st.markdown(f"""
+                    <table style="width:100%;border-collapse:collapse;background:#111827;border-radius:12px;overflow:hidden">
+                      <thead>
+                        <tr style="background:#1e293b">
+                          <th style="padding:8px 10px;text-align:left;color:#94a3b8;font-size:0.8rem">Critère</th>
+                          <th style="padding:8px 10px;text-align:center;color:#94a3b8;font-size:0.8rem">N</th>
+                          <th style="padding:8px 10px;text-align:left;color:#94a3b8;font-size:0.8rem">Taux victoire</th>
+                          <th style="padding:8px 10px;text-align:right;color:#94a3b8;font-size:0.8rem">ROI</th>
+                        </tr>
+                      </thead>
+                      <tbody>{rows_html}</tbody>
+                    </table>
+                    """, unsafe_allow_html=True)
+                    st.caption("⚠️ Données fiables après 20+ sélections. Avant ça, les % fluctuent beaucoup.")
+            else:
+                if journal:
+                    st.info("📊 L'analyse par critère sera disponible après avoir enregistré des résultats depuis l'app (les critères sont automatiquement sauvegardés).")
