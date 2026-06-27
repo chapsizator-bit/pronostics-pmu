@@ -442,6 +442,193 @@ def feat_performance_relative(cheval, tous_partants):
         return 2
     return 0
 
+# ============= NOUVEAUX CRITÈRES (lot 2) ==
+
+def feat_distance_optimale(cheval, course):
+    """
+    Compare la distance d'aujourd'hui à la distance optimale estimée du cheval.
+    Proxy : on regarde les champs gainsParDistance, distancePrefere, ou on
+    estime via le ratio victoires/courses à des catégories de distance.
+    """
+    dist_auj = safe_float(
+        course.get("distance") or course.get("distanceParcourue") or course.get("longueurPiste")
+    )
+    if not dist_auj:
+        return 0
+
+    # Champ direct si l'API le fournit
+    dist_pref = safe_float(cheval.get("distancePrefere") or cheval.get("distanceOptimale"))
+    if dist_pref:
+        ecart = abs(dist_auj - dist_pref) / dist_pref
+        if ecart < 0.08:   return 5
+        elif ecart < 0.20: return 2
+        elif ecart > 0.40: return -4
+        return 0
+
+    # Proxy : gains par catégorie de distance (champ dict de l'API)
+    gpd = cheval.get("gainsParDistance") or cheval.get("gainsParTypeDistance")
+    if isinstance(gpd, dict) and gpd:
+        # Trouver la catégorie avec les meilleurs gains
+        meilleure = max(gpd, key=lambda k: safe_float(gpd[k]) or 0)
+        # Correspondance approximative catégorie → mètres
+        cat_to_m = {
+            "COURT": 1400, "COURTE": 1400,
+            "MOYEN": 1800, "MOYENNE": 1800,
+            "LONG": 2400,  "LONGUE": 2400,
+            "TRES_LONG": 3000,
+        }
+        dist_opt = cat_to_m.get(str(meilleure).upper())
+        if dist_opt:
+            ecart = abs(dist_auj - dist_opt) / dist_opt
+            if ecart < 0.12:   return 4
+            elif ecart < 0.25: return 1
+            elif ecart > 0.40: return -3
+    return 0
+
+
+def feat_historique_piste(cheval, hippo_code):
+    """
+    Bonus si le cheval a déjà gagné ou placé sur cette piste.
+    Cherche dans gainsParHippodrome, ou un flag nombreVictoiresPiste.
+    """
+    if not hippo_code:
+        return 0
+
+    # Champ dict gagné par hippodrome
+    gph = cheval.get("gainsParHippodrome") or cheval.get("performancesParHippodrome")
+    if isinstance(gph, dict):
+        code = str(hippo_code).upper()
+        # Chercher une correspondance (code ou nom partiel)
+        for k, v in gph.items():
+            if str(k).upper() == code or code in str(k).upper():
+                gains = safe_float(v) or 0
+                if gains > 50000: return 5
+                elif gains > 10000: return 3
+                elif gains > 0:   return 1
+        return -1   # jamais couru ou rien gagné ici
+
+    # Champ simple : nombre de victoires sur la piste
+    vict_piste = safe_int(cheval.get("nombreVictoiresPiste") or cheval.get("victoiresHippodrome"), 0)
+    if vict_piste >= 2: return 4
+    elif vict_piste == 1: return 2
+
+    return 0
+
+
+def feat_terrain(cheval, course, disc):
+    """
+    État de la piste (bon/souple/lourd) comparé aux préférences du cheval.
+    Non applicable au trot (les pistes en trot sont standardisées).
+    """
+    if disc == "TROT":
+        return 0
+
+    terrain_auj = str(
+        course.get("terrain") or course.get("etatPiste") or
+        course.get("terrainGeneral") or course.get("nature") or ""
+    ).upper()
+    if not terrain_auj:
+        return 0
+
+    # Préférence du cheval
+    terrain_pref = str(
+        cheval.get("terrainPrefere") or cheval.get("typeTerrain") or ""
+    ).upper()
+
+    # Si l'API donne directement la préférence
+    if terrain_pref:
+        # Correspondances
+        lourd   = any(x in terrain_pref for x in ["LOURD", "MOU", "SOFT", "HEAVY"])
+        souple  = any(x in terrain_pref for x in ["SOUPLE", "GOOD_SOFT"])
+        bon     = any(x in terrain_pref for x in ["BON", "GOOD", "FIRM"])
+
+        lourd_auj  = any(x in terrain_auj for x in ["LOURD", "HEAVY", "MOU"])
+        souple_auj = any(x in terrain_auj for x in ["SOUPLE", "SOFT"])
+        bon_auj    = any(x in terrain_auj for x in ["BON", "GOOD", "FIRM"])
+
+        if (lourd and lourd_auj) or (souple and souple_auj) or (bon and bon_auj):
+            return 4    # terrain idéal
+        if (lourd and bon_auj) or (bon and lourd_auj):
+            return -4   # terrain opposé à la préférence
+        return 0
+
+    # Proxy : gains par type de terrain
+    gt = cheval.get("gainsParNaturePiste") or cheval.get("gainsParTerrain")
+    if isinstance(gt, dict) and gt:
+        meilleur = max(gt, key=lambda k: safe_float(gt[k]) or 0)
+        mk = str(meilleur).upper()
+        lourd_pref = any(x in mk for x in ["LOURD", "HEAVY"])
+        bon_pref   = any(x in mk for x in ["BON", "GOOD", "FIRM"])
+        lourd_auj  = any(x in terrain_auj for x in ["LOURD", "HEAVY"])
+        bon_auj    = any(x in terrain_auj for x in ["BON", "GOOD", "FIRM"])
+        if (lourd_pref and lourd_auj) or (bon_pref and bon_auj):
+            return 3
+        if (lourd_pref and bon_auj) or (bon_pref and lourd_auj):
+            return -3
+    return 0
+
+
+def feat_combo_connexion(cheval, tous_partants):
+    """
+    Synergies jockey+entraîneur : le duo a-t-il un bon taux de réussite ensemble ?
+    Calcul sur les partants de toutes les courses du jour qui partagent ce duo.
+    """
+    jock_id  = dict_id(cheval.get("jockey")) or dict_id(cheval.get("driver"))
+    train_id = dict_id(cheval.get("entraineur"))
+    if not jock_id or not train_id or not tous_partants:
+        return 0
+
+    wins   = 0
+    sorties = 0
+    for p in tous_partants:
+        j = dict_id(p.get("jockey")) or dict_id(p.get("driver"))
+        t = dict_id(p.get("entraineur"))
+        if j == jock_id and t == train_id:
+            sorties += 1
+            music = parse_musique(p.get("musique"))
+            if music and music[0] == ("pos", 1):
+                wins += 1
+
+    if sorties < 3:
+        return 0
+    taux = wins / sorties
+    if taux > 0.30:   return 6
+    elif taux > 0.20: return 3
+    elif taux > 0.10: return 1
+    elif taux < 0.05 and sorties >= 5:
+        return -2   # duo qui ne gagne jamais ensemble
+    return 0
+
+
+def feat_regularite_conditions(music, cheval):
+    """
+    Cohérence des performances selon les conditions.
+    Idée : séparer les 5 dernières courses entre 'bonnes conditions' (cote ≤ 5)
+    et 'mauvaises conditions' (cote > 5) et comparer les positions.
+    Sans historique de cote par course, on utilise un proxy de régularité :
+    l'écart entre les positions hautes et basses — un cheval 'tout ou rien'
+    est moins fiable qu'un cheval régulier.
+    """
+    positions = [p for t, p in music if t == "pos"]
+    if len(positions) < 5:
+        return 0
+
+    top_3  = sum(1 for p in positions[:5] if p <= 3)
+    hors_5 = sum(1 for p in positions[:5] if p > 5)
+
+    # Cheval régulier : souvent dans les 3, rarement hors top 5
+    if top_3 >= 3 and hors_5 <= 1:
+        return 4
+    elif top_3 >= 2 and hors_5 <= 2:
+        return 2
+    # Cheval 'tout ou rien' : alterne victoires et fond de peloton
+    elif top_3 >= 2 and hors_5 >= 3:
+        return -2
+    elif top_3 == 0 and hors_5 >= 4:
+        return -3
+    return 0
+
+
 # ============= LOGIT BRUT PAR CHEVAL ======
 def compute_logit(cheval, course, tous_partants, disc):
     """
@@ -505,6 +692,19 @@ def compute_logit(cheval, course, tous_partants, disc):
     f_gains_c = feat_gains_carriere_trot(cheval, disc)
     f_recul   = feat_recul_trot(cheval) if disc == "TROT" else 0
 
+    # --- Nouveaux critères (lot 2) ---
+    hippo_code = (
+        course.get("hippodrome", {}).get("code") or
+        course.get("hippodrome", {}).get("nom") or
+        course.get("codeHippodrome") or ""
+    ) if isinstance(course.get("hippodrome"), dict) else str(course.get("hippodrome") or "")
+
+    f_dist    = feat_distance_optimale(cheval, course)
+    f_piste   = feat_historique_piste(cheval, hippo_code)
+    f_terrain = feat_terrain(cheval, course, disc)
+    f_combo   = feat_combo_connexion(cheval, tous_partants)
+    f_reg_cond = feat_regularite_conditions(music, cheval)
+
     # Logit = somme pondérée (les poids reflètent l'importance relative)
     logit = (
         f_forme * 1.0
@@ -532,6 +732,11 @@ def compute_logit(cheval, course, tous_partants, disc):
         + f_obs * 0.5
         + f_gains_c * 0.6
         + f_recul * 0.7
+        + f_dist * 0.8            # distance optimale
+        + f_piste * 0.7           # historique sur la piste
+        + f_terrain * 0.8         # terrain préféré (plat/obstacle)
+        + f_combo * 0.7           # combo jockey+entraîneur
+        + f_reg_cond * 0.6        # régularité par conditions
     )
 
     details = {
@@ -552,6 +757,11 @@ def compute_logit(cheval, course, tous_partants, disc):
         "trainer":  round(f_trainer, 1),
         "poids":    round(f_poids, 1),
         "oeil":     round(f_oeil, 1),
+        "dist":     round(f_dist, 1),
+        "piste":    round(f_piste, 1),
+        "terrain":  round(f_terrain, 1),
+        "combo":    round(f_combo, 1),
+        "reg_cond": round(f_reg_cond, 1),
     }
     return logit, cote, details
 
@@ -799,6 +1009,11 @@ if st.button("🔍 Analyser les courses du jour", use_container_width=True, type
                 pill("Classe",    d.get("classe")),
                 pill("Perf.rel.", d.get("perf_rel")),
                 pill("RK",        d.get("rk")),
+                pill("Distance",  d.get("dist")),
+                pill("Piste",     d.get("piste")),
+                pill("Terrain",   d.get("terrain")),
+                pill("Combo",     d.get("combo")),
+                pill("Rég.cond.", d.get("reg_cond")),
                 pill("Fraîcheur", d.get("fraich")),
                 pill("Déferré",   d.get("deferre")),
                 pill("Jockey",    d.get("jockey")),
