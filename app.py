@@ -7,11 +7,10 @@ import streamlit as st
 
 # ================= CONFIG =================
 MAX_SELECTIONS = 3
-MIN_SCORE = 78
-MIN_CONF  = 72
-MIN_VALUE = 1
-TIMEOUT   = 12
-BASE_URL  = "https://online.turfinfo.api.pmu.fr/rest/client/1/programme"
+MIN_PROB_EDGE  = 0.03   # avantage minimum sur le marché (3 points de proba)
+MIN_CONF       = 60
+TIMEOUT        = 12
+BASE_URL       = "https://online.turfinfo.api.pmu.fr/rest/client/1/programme"
 
 # ================= API ====================
 def pmu_get(path):
@@ -31,20 +30,19 @@ def clamp(v, a, b):
     return max(a, min(v, b))
 
 def dict_id(v):
-    """Retourne v['id'] si v est un dict, sinon None — évite AttributeError."""
     return v.get("id") if isinstance(v, dict) else None
 
 def safe_float(v):
     try:
         f = float(v)
         return f if not math.isnan(f) else None
-    except:
+    except Exception:
         return None
 
 def safe_int(v, default=0):
     try:
         return int(v)
-    except:
+    except Exception:
         return default
 
 def detect_discipline(course):
@@ -77,40 +75,48 @@ def parse_musique(m):
         i += 1
     return vals[:10]
 
-# ============= CRITÈRES DE BASE ===========
+# ============= SOFTMAX ====================
+def softmax(scores):
+    """Convertit des logits bruts en probabilités qui somment à 1."""
+    if not scores:
+        return []
+    max_s = max(scores)
+    exps  = [math.exp(clamp(s - max_s, -30, 30)) for s in scores]
+    total = sum(exps)
+    return [e / total for e in exps] if total > 0 else [1 / len(scores)] * len(scores)
 
-def score_forme(music):
+# ============= FEATURES INDIVIDUELLES =====
+
+def feat_forme(music):
     """Pondération exponentielle des positions récentes."""
     score = 0
     for i, (typ, pos) in enumerate(music):
         if typ != "pos":
             continue
         w = math.exp(-0.35 * i)
-        if pos == 1:       score += 12 * w
-        elif pos <= 3:     score += 8 * w
-        elif pos <= 5:     score += 4 * w
-        elif pos <= 8:     score += 1.5 * w
+        if pos == 1:      score += 12 * w
+        elif pos <= 3:    score += 8 * w
+        elif pos <= 5:    score += 4 * w
+        elif pos <= 8:    score += 1.5 * w
     return clamp(score, 0, 20)
 
-def score_regularite(music):
-    """Faible écart-type = cheval régulier."""
+def feat_regularite(music):
     vals = [p for t, p in music if t == "pos"]
     if len(vals) < 4:
         return 0
-    moy = sum(vals) / len(vals)
+    moy   = sum(vals) / len(vals)
     sigma = math.sqrt(sum((x - moy)**2 for x in vals) / len(vals))
     return clamp(8 - sigma, 0, 8)
 
-def score_progression(music):
-    """Bonus si les positions s'améliorent sur les 5 dernières courses."""
+def feat_progression(music):
     vals = [p for t, p in music if t == "pos"][:5]
     if len(vals) < 3:
         return 0
     n = len(vals)
     x_moy = (n - 1) / 2
     y_moy = sum(vals) / n
-    num = sum((i - x_moy) * (vals[i] - y_moy) for i in range(n))
-    den = sum((i - x_moy)**2 for i in range(n))
+    num   = sum((i - x_moy) * (vals[i] - y_moy) for i in range(n))
+    den   = sum((i - x_moy)**2 for i in range(n))
     if den == 0:
         return 0
     pente = num / den
@@ -119,32 +125,21 @@ def score_progression(music):
     elif pente > 0.5:  return -2
     return 0
 
-def score_ratio_place(cheval):
-    """% de courses dans le top 3.
-    nombrePlaces inclut déjà les victoires côté API PMU — pas besoin d'ajouter vict.
-    """
+def feat_ratio_place(cheval):
     total  = safe_int(cheval.get("nombreCourses", 0))
     places = safe_int(cheval.get("nombrePlaces", 0)) or safe_int(cheval.get("nombrePlace", 0))
     if total < 3:
         return 0
-    ratio = places / total
-    return clamp(ratio * 8, 0, 8)
+    return clamp((places / total) * 8, 0, 8)
 
-def score_marche(ch):
-    cote = (ch.get("dernierRapportDirect") or {}).get("rapport")
-    if not cote:
-        cote = ch.get("coteInitiale")
-    cote = safe_float(cote)
-    if not cote:
-        return 0, None
-    prob = clamp(1 / cote, 0, 0.95)
-    return prob * 12, cote
+def feat_taux_victoires(cheval):
+    total = safe_int(cheval.get("nombreCourses", 0))
+    vict  = safe_int(cheval.get("nombreVictoires", 0))
+    if total == 0:
+        return 0
+    return clamp((vict / total) * 12, 0, 10)
 
-# ============= NOUVEAUX CRITÈRES ==========
-
-def score_fraicheur(cheval):
-    """Bonus/malus selon le nombre de jours depuis la dernière course."""
-    s = 0
+def feat_fraicheur(cheval):
     derniere = cheval.get("dateDerniereCourse") or cheval.get("derniereCourseDateFr")
     if not derniere:
         return 0
@@ -162,32 +157,17 @@ def score_fraicheur(cheval):
             else:
                 return 0
         jours = (date.today() - d).days
-        if jours < 0:
-            return 0
-        if 14 <= jours <= 35:   s += 4
-        elif 7 <= jours < 14:   s += 2
-        elif 35 < jours <= 60:  s += 1
-        elif jours > 90:        s -= 3
-        elif jours > 60:        s -= 1
-    except:
+        if jours < 0:     return 0
+        if 14 <= jours <= 35:  return 4
+        elif 7 <= jours < 14:  return 2
+        elif 35 < jours <= 60: return 1
+        elif jours > 90:       return -3
+        elif jours > 60:       return -1
+    except Exception:
         pass
-    return round(s, 1)
+    return 0
 
-def score_allocation(course):
-    """Bonus selon le niveau (allocation) de la course."""
-    alloc = safe_float(
-        course.get("allocation") or course.get("montantPrix") or course.get("totalOffert")
-    )
-    if not alloc:
-        return 0
-    if alloc >= 100000:   return -2
-    elif alloc >= 50000:  return 1
-    elif alloc >= 20000:  return 3
-    elif alloc >= 10000:  return 2
-    else:                 return 1
-
-def score_nb_partants(course):
-    """Malus si beaucoup de partants (aléatoire augmente)."""
+def feat_nb_partants(course):
     nb = safe_int(course.get("nombreDeclaresPartants", 0))
     if nb == 0:
         return 0
@@ -197,38 +177,23 @@ def score_nb_partants(course):
     elif nb <= 15: return -1
     else:          return -3
 
-def score_recul_trot(cheval):
-    """Malus selon les mètres de recul en trot."""
-    recul = safe_float(cheval.get("handicapDistance") or cheval.get("distanceHandicap") or 0)
-    if not recul or recul <= 0:
-        return 0
-    if recul <= 25:    return -1
-    elif recul <= 50:  return -2
-    elif recul <= 75:  return -4
-    else:              return -6
-
-def score_gains_annee(cheval):
-    """Gains de l'année en cours — plus représentatif que la carrière."""
+def feat_gains_annee(cheval):
     gains = safe_float(cheval.get("gainsAnneeEnCours") or cheval.get("gainsCourseAnneeCourante") or 0)
     if not gains:
         return 0
     return clamp(gains / 30000 * 5, 0, 5)
 
-def score_sexe(cheval):
-    """Légère préférence pour les hongres (plus réguliers)."""
+def feat_sexe(cheval):
     sexe = str(cheval.get("sexe") or cheval.get("indicateurSexe") or "").upper()
     if "HONG" in sexe or sexe == "H":
         return 2
     return 0
 
-def score_entraineur(cheval, tous_partants):
-    """Taux de victoires de l'entraîneur parmi les partants de la réunion."""
-    s = 0
+def feat_entraineur(cheval, tous_partants):
     ent_id = dict_id(cheval.get("entraineur"))
     if not ent_id or not tous_partants:
         return 0
-    victoires = 0
-    sorties   = 0
+    victoires = sorties = 0
     for p in tous_partants:
         if dict_id(p.get("entraineur")) == ent_id:
             sorties += 1
@@ -236,12 +201,10 @@ def score_entraineur(cheval, tous_partants):
             if music and music[0] == ("pos", 1):
                 victoires += 1
     if sorties >= 3:
-        taux = victoires / sorties
-        s += clamp(taux * 8, 0, 5)
-    return round(s, 1)
+        return round(clamp((victoires / sorties) * 8, 0, 5), 1)
+    return 0
 
-def score_forme_ecurie(cheval, tous_partants):
-    """Bonus si l'écurie/propriétaire a gagné récemment dans la réunion."""
+def feat_forme_ecurie(cheval, tous_partants):
     prop_id = dict_id(cheval.get("proprietaire"))
     if not prop_id or not tous_partants:
         return 0
@@ -252,26 +215,19 @@ def score_forme_ecurie(cheval, tous_partants):
                 return 3
     return 0
 
-def score_deferre(cheval):
+def feat_deferre(cheval):
     deferre = str(cheval.get("deferre") or cheval.get("incident") or "").upper()
     if "DEFER" in deferre or deferre in ["D", "DA", "DP", "DAP"]:
         return 4
     return 0
 
-def score_jockey(cheval, tous_partants):
-    jockey_id = (
-        dict_id(cheval.get("jockey"))
-        or dict_id(cheval.get("driver"))
-    )
+def feat_jockey(cheval, tous_partants):
+    jockey_id = dict_id(cheval.get("jockey")) or dict_id(cheval.get("driver"))
     if not jockey_id or not tous_partants:
         return 0
-    victoires = 0
-    montes    = 0
+    victoires = montes = 0
     for p in tous_partants:
-        j = (
-            dict_id(p.get("jockey"))
-            or dict_id(p.get("driver"))
-        )
+        j = dict_id(p.get("jockey")) or dict_id(p.get("driver"))
         if j == jockey_id:
             montes += 1
             music = parse_musique(p.get("musique"))
@@ -281,172 +237,358 @@ def score_jockey(cheval, tous_partants):
         return round(clamp((victoires / montes) * 10, 0, 6), 1)
     return 0
 
-def score_poids(cheval, disc):
+def feat_poids(cheval, disc):
     poids = safe_float(cheval.get("handicapPoids") or cheval.get("poidsConditionMonte"))
     if not poids:
         return 0
-    ref = {"PLAT": 57.0, "OBSTACLE": 65.0, "TROT": 0}
+    ref  = {"PLAT": 57.0, "OBSTACLE": 65.0, "TROT": 0}
     base = ref.get(disc, 0)
     if base == 0:
         return 0
     ecart = poids - base
-    if ecart > 4:     return -5
-    elif ecart > 2:   return -3
-    elif ecart > 0:   return -1
-    elif ecart < -2:  return 2
+    if ecart > 4:    return -5
+    elif ecart > 2:  return -3
+    elif ecart > 0:  return -1
+    elif ecart < -2: return 2
     return 0
 
-def score_oeilleres(cheval):
+def feat_oeilleres(cheval):
     oeilleres = str(cheval.get("oeilleres") or cheval.get("equipement") or "").upper()
-    if not oeilleres:
-        return 0
     if "PREMIER" in oeilleres or "1ER" in oeilleres:
         return 5
     elif "OEIL" in oeilleres or "OEI" in oeilleres:
         return 2
     return 0
 
-# ============= SCORE BASE =================
-def score_base(cheval, course):
-    music = parse_musique(cheval.get("musique"))
-    forme = score_forme(music)
-    reg   = score_regularite(music)
-    prog  = score_progression(music)
-    place = score_ratio_place(cheval)
-    total = safe_int(cheval.get("nombreCourses", 0))
-    vict  = safe_int(cheval.get("nombreVictoires", 0))
-    tx_vict = clamp((vict / total) * 12, 0, 10) if total > 0 else 0
-    mkt, cote = score_marche(cheval)
-    score = forme + reg + prog + place + tx_vict + mkt
-    return {
-        "score": round(score, 1),
-        "cote":  cote,
-        "forme": round(forme, 1),
-        "reg":   round(reg, 1),
-        "prog":  round(prog, 1),
-        "place": round(place, 1),
-    }
+def feat_recul_trot(cheval):
+    recul = safe_float(cheval.get("handicapDistance") or cheval.get("distanceHandicap") or 0)
+    if not recul or recul <= 0:
+        return 0
+    if recul <= 25:   return -1
+    elif recul <= 50: return -2
+    elif recul <= 75: return -4
+    else:             return -6
 
-# ============= DISCIPLINES ================
-def score_trot(cheval, course):
-    s = 0
+def feat_age_disc(cheval, disc):
     age = safe_float(cheval.get("age"))
-    if age:
-        if 5 <= age <= 8: s += 6
-        elif age in [4, 9]: s += 3
-    gains = safe_float(cheval.get("gainsCarriere", 0))
-    if gains:
-        s += clamp(gains / 200000 * 8, 0, 8)
-    num = safe_int(cheval.get("numPmu", 0))
-    if num:
-        if num <= 3: s += 5
-        elif num <= 6: s += 3
-    s += score_recul_trot(cheval)
-    return round(s, 1)
+    if not age:
+        return 0
+    if disc == "TROT":
+        if 5 <= age <= 8:   return 6
+        elif age in [4, 9]: return 3
+    elif disc == "PLAT":
+        if 3 <= age <= 5:   return 6
+        elif age <= 7:      return 3
+    elif disc == "OBSTACLE":
+        if 5 <= age <= 8:   return 5
+    return 0
 
-def score_plat(cheval, course):
-    s = 0
-    age = safe_float(cheval.get("age"))
-    if age:
-        if 3 <= age <= 5: s += 6
-        elif age <= 7: s += 3
+def feat_corde_plat(cheval, course, disc):
+    if disc != "PLAT":
+        return 0
     num = safe_int(cheval.get("numPmu", 0))
     nb  = safe_int(course.get("nombreDeclaresPartants", 12)) or 12
-    if nb > 0:
-        s += clamp((nb - num) / 2, 0, 6)
-    return round(s, 1)
+    if num and nb > 0:
+        return round(clamp((nb - num) / 2, 0, 6), 1)
+    return 0
 
-def score_obstacle(cheval, course):
-    s = 0
+def feat_experience_obs(cheval, disc):
+    if disc != "OBSTACLE":
+        return 0
     total = safe_int(cheval.get("nombreCourses", 0))
     if total:
-        s += clamp(math.log(total + 1) * 3, 0, 8)
-    age = safe_float(cheval.get("age"))
-    if age and 5 <= age <= 8:
-        s += 5
-    return round(s, 1)
+        return round(clamp(math.log(total + 1) * 3, 0, 8), 1)
+    return 0
 
-# ============= VALUE & CONFIANCE ==========
-def calc_value(score, cote):
-    if not cote:
-        return -100
-    prob_modele = clamp(score / 100, 0.01, 0.95)
-    prob_marche = clamp(1 / cote, 0.01, 0.95)
-    return round((prob_modele - prob_marche) * 100, 1)
+def feat_gains_carriere_trot(cheval, disc):
+    if disc != "TROT":
+        return 0
+    gains = safe_float(cheval.get("gainsCarriere", 0))
+    if gains:
+        return round(clamp(gains / 200000 * 8, 0, 8), 1)
+    return 0
 
-def calc_confiance(score, value, cote):
-    conf = score * 0.9
-    if value > 8:   conf += 8
-    if value > 15:  conf += 5
-    if cote:
-        if cote > 20:   conf -= 10
-        elif cote > 12: conf -= 5
-        elif cote < 3:  conf += 3
-    return round(clamp(conf, 0, 99), 1)
+# ============= NOUVEAUX CRITÈRES AVANCÉS ==
 
-# ============= ANALYSE CHEVAL =============
-def analyse_cheval(cheval, course, tous_partants):
-    base = score_base(cheval, course)
-    disc = detect_discipline(course)
+def feat_reduction_km(cheval, tous_partants, disc):
+    """
+    Réduction kilométrique normalisée dans le champ (trot uniquement).
+    Toujours comparé aux autres chevaux de la même course.
+    """
+    if disc != "TROT":
+        return 0, None
+    rk = safe_float(cheval.get("reductionKilometrique") or cheval.get("rkActuel"))
+    if not rk:
+        return 0, None
+    rks = [safe_float(p.get("reductionKilometrique") or p.get("rkActuel"))
+           for p in tous_partants]
+    rks = [r for r in rks if r]
+    if len(rks) < 2:
+        return 0, rk
+    min_rk, max_rk = min(rks), max(rks)
+    if max_rk == min_rk:
+        return 0, rk
+    # Plus basse RK = plus rapide = meilleur
+    rang = (max_rk - rk) / (max_rk - min_rk)
+    return round(clamp(rang * 12, 0, 12), 1), rk
 
-    if disc == "TROT":
-        b_disc = score_trot(cheval, course)
-    elif disc == "PLAT":
-        b_disc = score_plat(cheval, course)
+def feat_mouvement_cote(cheval):
+    """
+    Détecte les chutes de cote significatives = argent des insiders.
+    Signal fort : cote qui baisse de >30% entre ouverture et maintenant.
+    """
+    cote_init = safe_float(cheval.get("coteInitiale"))
+    rapport   = cheval.get("dernierRapportDirect") or {}
+    if isinstance(rapport, dict):
+        cote_fin = safe_float(rapport.get("rapport"))
     else:
-        b_disc = score_obstacle(cheval, course)
+        cote_fin = None
+    if not cote_init or not cote_fin or cote_init <= 0:
+        return 0, None
+    chute = (cote_init - cote_fin) / cote_init
+    if chute > 0.30:    return 8, chute
+    elif chute > 0.15:  return 4, chute
+    elif chute > 0.05:  return 2, chute
+    elif chute < -0.25: return -4, chute
+    elif chute < -0.10: return -2, chute
+    return 0, chute
 
-    b_fraicheur  = score_fraicheur(cheval)
-    b_allocation = score_allocation(course)
-    b_partants   = score_nb_partants(course)
-    b_gains_an   = score_gains_annee(cheval)
-    b_sexe       = score_sexe(cheval)
-    b_entraineur = score_entraineur(cheval, tous_partants)
-    b_ecurie     = score_forme_ecurie(cheval, tous_partants)
-    b_deferre    = score_deferre(cheval)
-    b_jockey     = score_jockey(cheval, tous_partants)
-    b_poids      = score_poids(cheval, disc)
-    b_oeilleres  = score_oeilleres(cheval)
+def feat_classe(cheval, course):
+    """
+    Indice de classe : le cheval descend-il en classe aujourd'hui ?
+    Descente de classe = signal fort (le cheval bat du moins fort).
+    Montée de classe = signal négatif.
+    """
+    alloc = safe_float(
+        course.get("allocation") or course.get("montantPrix") or course.get("totalOffert")
+    )
+    if not alloc:
+        return 0
+    gains    = safe_float(cheval.get("gainsCarriere", 0)) or 0
+    nb_cours = safe_int(cheval.get("nombreCourses", 0))
+    if nb_cours < 3 or not gains:
+        return 0
+    # Gain moyen par course → proxy du niveau habituel
+    # On estime que le 1er touche ~25% de l'allocation
+    gain_moyen    = gains / nb_cours
+    niveau_estim  = gain_moyen / 0.25
+    if niveau_estim <= 0:
+        return 0
+    ratio = alloc / niveau_estim
+    if ratio < 0.4:    return 7    # grosse descente de classe
+    elif ratio < 0.65: return 4
+    elif ratio < 0.85: return 2
+    elif ratio > 2.5:  return -5   # grosse montée de classe
+    elif ratio > 1.5:  return -3
+    elif ratio > 1.15: return -1
+    return 0
 
-    total_bonus = (
-        b_disc + b_fraicheur + b_allocation + b_partants +
-        b_gains_an + b_sexe + b_entraineur + b_ecurie +
-        b_deferre + b_jockey + b_poids + b_oeilleres
+def feat_performance_relative(cheval, tous_partants):
+    """
+    Quand ce cheval a gagné, était-il favori ou outsider ?
+    Un cheval qui gagne en tant qu'outsider = vraie valeur.
+    Proxy : comparer son taux de victoires vs son rang de cote dans le champ.
+    """
+    taux_vict = 0
+    total = safe_int(cheval.get("nombreCourses", 0))
+    vict  = safe_int(cheval.get("nombreVictoires", 0))
+    if total >= 5:
+        taux_vict = vict / total
+    cote = safe_float((cheval.get("dernierRapportDirect") or {}).get("rapport")) or \
+           safe_float(cheval.get("coteInitiale"))
+    if not cote or not tous_partants:
+        return 0
+    # Rang dans le champ (1 = favori)
+    cotes_champ = []
+    for p in tous_partants:
+        c = safe_float((p.get("dernierRapportDirect") or {}).get("rapport")) or \
+            safe_float(p.get("coteInitiale"))
+        if c:
+            cotes_champ.append(c)
+    if not cotes_champ:
+        return 0
+    cotes_champ.sort()
+    rang = cotes_champ.index(min(cotes_champ, key=lambda x: abs(x - cote))) + 1
+    ratio_rang = rang / len(cotes_champ)  # 0 = favori, 1 = outsider
+    # Bonus si taux de victoires élevé mais n'est pas favori = value
+    if taux_vict > 0.25 and ratio_rang > 0.5:
+        return 4
+    elif taux_vict > 0.15 and ratio_rang > 0.6:
+        return 2
+    return 0
+
+# ============= LOGIT BRUT PAR CHEVAL ======
+def compute_logit(cheval, course, tous_partants, disc):
+    """
+    Calcule le logit brut d'un cheval = somme pondérée de ses features.
+    Ces poids s'inspirent de la littérature (Benter 1994, Bolton & Chapman 1986).
+    Le marché reçoit un poids fort (~35%) car très efficient en PMU.
+    """
+    music = parse_musique(cheval.get("musique"))
+
+    # --- Features de forme (poids ~0.25) ---
+    f_forme   = feat_forme(music)           # 0-20
+    f_reg     = feat_regularite(music)      # 0-8
+    f_prog    = feat_progression(music)     # -2..5
+    f_place   = feat_ratio_place(cheval)    # 0-8
+    f_tx_vict = feat_taux_victoires(cheval) # 0-10
+
+    # --- Marché (poids ~0.35) ---
+    cote      = safe_float((cheval.get("dernierRapportDirect") or {}).get("rapport")) or \
+                safe_float(cheval.get("coteInitiale"))
+    f_marche  = clamp(1 / cote * 35, 0, 35) if cote else 0
+
+    # --- Mouvement de cote ---
+    f_drift, drift_val = feat_mouvement_cote(cheval)
+
+    # --- Classe ---
+    f_classe  = feat_classe(cheval, course)
+    f_perf_rel = feat_performance_relative(cheval, tous_partants)
+
+    # --- Réduction kilométrique (trot) ---
+    f_rk, rk_val = feat_reduction_km(cheval, tous_partants, disc)
+
+    # --- Conditions / physique ---
+    f_fraich  = feat_fraicheur(cheval)
+    f_partants = feat_nb_partants(course)
+    f_gains_an = feat_gains_annee(cheval)
+    f_sexe    = feat_sexe(cheval)
+    f_deferre = feat_deferre(cheval)
+    f_poids   = feat_poids(cheval, disc)
+    f_oeil    = feat_oeilleres(cheval)
+
+    # --- Écurie / connexion ---
+    f_trainer = feat_entraineur(cheval, tous_partants)
+    f_ecurie  = feat_forme_ecurie(cheval, tous_partants)
+    f_jockey  = feat_jockey(cheval, tous_partants)
+
+    # --- Discipline-spécifique ---
+    f_age     = feat_age_disc(cheval, disc)
+    f_corde   = feat_corde_plat(cheval, course, disc)
+    f_obs     = feat_experience_obs(cheval, disc)
+    f_gains_c = feat_gains_carriere_trot(cheval, disc)
+    f_recul   = feat_recul_trot(cheval) if disc == "TROT" else 0
+
+    # Logit = somme pondérée (les poids reflètent l'importance relative)
+    logit = (
+        f_forme * 1.0
+        + f_reg * 0.8
+        + f_prog * 0.7
+        + f_place * 0.7
+        + f_tx_vict * 0.8
+        + f_marche * 1.0          # fort poids marché
+        + f_drift * 1.2           # mouvement de cote — signal fort
+        + f_classe * 0.9          # indice de classe
+        + f_perf_rel * 0.6
+        + f_rk * 1.1              # RK normalisé — très pertinent en trot
+        + f_fraich * 0.6
+        + f_partants * 0.4
+        + f_gains_an * 0.5
+        + f_sexe * 0.3
+        + f_deferre * 0.5
+        + f_poids * 0.6
+        + f_oeil * 0.5
+        + f_trainer * 0.5
+        + f_ecurie * 0.4
+        + f_jockey * 0.5
+        + f_age * 0.5
+        + f_corde * 0.4
+        + f_obs * 0.5
+        + f_gains_c * 0.6
+        + f_recul * 0.7
     )
 
-    final = clamp(base["score"] + total_bonus, 0, 99)
-    value = calc_value(final, base["cote"])
-    conf  = calc_confiance(final, value, base["cote"])
-
-    return {
-        "discipline": disc,
-        "score":      round(final, 1),
-        "value":      value,
-        "confiance":  conf,
-        "cote":       base["cote"],
-        "details": {
-            "forme":      base["forme"],
-            "reg":        base["reg"],
-            "prog":       base["prog"],
-            "place":      base["place"],
-            "disc":       b_disc,
-            "fraicheur":  b_fraicheur,
-            "allocation": b_allocation,
-            "partants":   b_partants,
-            "gains_an":   b_gains_an,
-            "sexe":       b_sexe,
-            "entraineur": b_entraineur,
-            "ecurie":     b_ecurie,
-            "deferre":    b_deferre,
-            "jockey":     b_jockey,
-            "poids":      b_poids,
-            "oeilleres":  b_oeilleres,
-        }
+    details = {
+        "forme":    round(f_forme, 1),
+        "reg":      round(f_reg, 1),
+        "prog":     round(f_prog, 1),
+        "place":    round(f_place, 1),
+        "marche":   round(f_marche, 1),
+        "drift":    round(f_drift, 1),
+        "classe":   round(f_classe, 1),
+        "perf_rel": round(f_perf_rel, 1),
+        "rk":       round(f_rk, 1),
+        "fraich":   round(f_fraich, 1),
+        "partants": round(f_partants, 1),
+        "gains_an": round(f_gains_an, 1),
+        "deferre":  round(f_deferre, 1),
+        "jockey":   round(f_jockey, 1),
+        "trainer":  round(f_trainer, 1),
+        "poids":    round(f_poids, 1),
+        "oeil":     round(f_oeil, 1),
     }
+    return logit, cote, details
+
+# ============= ANALYSE INTRA-COURSE =======
+def analyse_course(partants, course):
+    """
+    Analyse tous les chevaux d'une course ensemble.
+    1. Calcule les logits bruts
+    2. Applique un softmax → probabilités modèle
+    3. Compare aux probabilités implicites du marché
+    4. Value = prob_modele - prob_marche
+    """
+    disc    = detect_discipline(course)
+    logits  = []
+    donnees = []
+
+    for ch in partants:
+        try:
+            logit, cote, details = compute_logit(ch, course, partants, disc)
+            logits.append(logit)
+            donnees.append({
+                "cheval":  ch,
+                "cote":    cote,
+                "details": details,
+                "logit":   logit,
+            })
+        except Exception as e:
+            logits.append(0)
+            donnees.append({
+                "cheval":  ch,
+                "cote":    None,
+                "details": {},
+                "logit":   0,
+                "erreur":  str(e),
+            })
+
+    # Probabilités modèle (softmax sur les logits)
+    probs_modele = softmax(logits)
+
+    # Probabilités marché (1/cote normalisées)
+    cotes_brutes = [d["cote"] for d in donnees]
+    probs_brutes = [1 / c if c and c > 0 else 0 for c in cotes_brutes]
+    somme_brutes = sum(probs_brutes)
+    probs_marche = [p / somme_brutes if somme_brutes > 0 else 0 for p in probs_brutes]
+
+    resultats = []
+    for d, pm, pmkt in zip(donnees, probs_modele, probs_marche):
+        if "erreur" in d:
+            continue
+        ch      = d["cheval"]
+        value   = round((pm - pmkt) * 100, 1)  # en points de %
+        # Confiance : prob modèle * qualité du signal
+        drift_bonus = d["details"].get("drift", 0)
+        confiance   = round(clamp(pm * 100 + drift_bonus * 2, 0, 99), 1)
+
+        resultats.append({
+            "nom":        ch.get("nom", "?"),
+            "num":        ch.get("numPmu"),
+            "discipline": disc,
+            "prob":       round(pm * 100, 1),    # probabilité modèle en %
+            "prob_mkt":   round(pmkt * 100, 1),  # probabilité marché en %
+            "value":      value,
+            "confiance":  confiance,
+            "cote":       d["cote"],
+            "logit":      round(d["logit"], 1),
+            "details":    d["details"],
+        })
+
+    return resultats
 
 # =============== STREAMLIT UI =============
 st.set_page_config(
-    page_title="🏇 Benter V2 PMU",
+    page_title="🏇 Benter PMU",
     page_icon="🏇",
     layout="centered"
 )
@@ -472,21 +614,31 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🏇 Benter V2 — Sélections PMU")
+st.title("🏇 Benter PMU — Sélections du jour")
 st.caption(datetime.now().strftime("%A %d %B %Y"))
 
 with st.sidebar:
     st.header("⚙️ Filtres")
-    min_score = st.slider("Score minimum",     0, 99, MIN_SCORE)
-    min_conf  = st.slider("Confiance minimum", 0, 99, MIN_CONF)
-    min_value = st.slider("Value minimum",    -20, 30, MIN_VALUE)
-    max_sel   = st.slider("Sélections max",    1, 10, MAX_SELECTIONS)
+    min_value  = st.slider("Avantage marché minimum (%)", -10, 20, int(MIN_PROB_EDGE * 100))
+    min_conf   = st.slider("Confiance minimum",           0, 99, MIN_CONF)
+    max_sel    = st.slider("Sélections max",              1, 10, MAX_SELECTIONS)
     st.divider()
-    st.caption("**Critères actifs (17)**")
-    st.caption("Musique · Régularité · Progression · Ratio placé · Taux victoires · Cote marché")
-    st.caption("Fraîcheur · Allocation · Nb partants · Gains année · Sexe")
-    st.caption("Entraîneur · Forme écurie · Déferré · Jockey · Poids · Œillères")
-    st.caption("+ Recul handicap (trot) · Âge · Corde (plat) · Expérience (obstacle)")
+    st.caption("**Architecture : Benter-style**")
+    st.caption("• Logits → Softmax → Probabilités relatives dans le champ")
+    st.caption("• Value = prob. modèle − prob. marché")
+    st.caption("**Critères (23)**")
+    st.caption("Forme · Régularité · Progression · Ratio placé · Taux victoires")
+    st.caption("Marché · Mouvement de cote · Indice de classe · Perf. relative")
+    st.caption("RK normalisé (trot) · Fraîcheur · Partants · Gains/an")
+    st.caption("Déferré · Jockey · Entraîneur · Poids · Œillères · Écurie")
+    st.caption("Âge · Corde (plat) · Recul (trot) · Expérience (obstacle)")
+
+def pill(label, val):
+    if val is None or val == 0:
+        return f'<span class="detail-pill">{label} 0</span>'
+    cls  = "pos" if val > 0 else "neg"
+    sign = "+" if val > 0 else ""
+    return f'<span class="detail-pill {cls}">{label} {sign}{val}</span>'
 
 if st.button("🔍 Analyser les courses du jour", use_container_width=True, type="primary"):
 
@@ -505,7 +657,7 @@ if st.button("🔍 Analyser les courses du jour", use_container_width=True, type
 
     st.info(f"📋 {len(reunions)} réunions · {len(courses)} courses détectées")
 
-    candidats = []
+    candidats       = []
     erreurs_api     = []
     erreurs_analyse = []
     bar = st.progress(0, text="Analyse des partants…")
@@ -520,65 +672,56 @@ if st.button("🔍 Analyser les courses du jour", use_container_width=True, type
             pdata    = pmu_get(f"/{today()}/R{num_r}/C{num_c}/participants")
             partants = pdata.get("participants") or []
         except Exception as e:
-            erreurs_api.append(f"R{num_r}C{num_c} — API: {e}")
+            erreurs_api.append(f"R{num_r}C{num_c} — {e}")
             continue
-        for ch in partants:
-            try:
-                a = analyse_cheval(ch, c, partants)
-                a.update({
-                    "nom":    ch.get("nom", "?"),
-                    "num":    ch.get("numPmu"),
-                    "course": f"R{num_r}C{num_c}",
-                    "hippo":  ((r.get("hippodrome") or {}).get("nom") or "?"),
-                })
-                candidats.append(a)
-            except Exception as e:
-                erreurs_analyse.append(f"{ch.get('nom','?')} ({f'R{num_r}C{num_c}'}) — {type(e).__name__}: {e}")
+
+        try:
+            resultats = analyse_course(partants, c)
+            hippo     = (r.get("hippodrome") or {}).get("nom") or "?"
+            for res in resultats:
+                res["course"] = f"R{num_r}C{num_c}"
+                res["hippo"]  = hippo
+            candidats.extend(resultats)
+        except Exception as e:
+            erreurs_analyse.append(f"R{num_r}C{num_c} — {type(e).__name__}: {e}")
 
     bar.empty()
 
     if erreurs_api or erreurs_analyse:
         with st.expander(f"⚠️ Diagnostics ({len(erreurs_api)} erreurs API · {len(erreurs_analyse)} erreurs analyse)"):
-            if erreurs_api:
-                st.caption("**Erreurs API (participants non chargés) :**")
-                for e in erreurs_api[:5]:
-                    st.caption(f"• {e}")
-            if erreurs_analyse:
-                st.caption("**Erreurs analyse (chevaux ignorés) :**")
-                for e in erreurs_analyse[:5]:
-                    st.caption(f"• {e}")
+            for e in erreurs_api[:5]:
+                st.caption(f"• API: {e}")
+            for e in erreurs_analyse[:5]:
+                st.caption(f"• Analyse: {e}")
 
     gardes = [
         c for c in candidats
-        if c["score"] >= min_score
+        if c["value"] >= min_value
         and c["confiance"] >= min_conf
-        and c["value"] >= min_value
+        and c.get("cote")
     ]
-    gardes.sort(key=lambda x: (x["confiance"], x["value"]), reverse=True)
+    gardes.sort(key=lambda x: (x["value"], x["confiance"]), reverse=True)
     gardes = gardes[:max_sel]
 
     st.divider()
 
     if not gardes:
         st.warning("❌ Aucun pari aujourd'hui — aucun cheval ne passe les filtres.")
-        top3 = sorted(candidats, key=lambda x: x["score"], reverse=True)[:3]
+        top3 = sorted(candidats, key=lambda x: x["value"], reverse=True)[:3]
         if top3:
-            st.caption("Top 3 des meilleurs scores aujourd'hui (hors filtres) :")
+            st.caption("Top 3 des meilleures values aujourd'hui (hors filtres) :")
             for c in top3:
-                st.caption(f"• N°{c['num']} {c['nom']} ({c['course']}) — Score {c['score']} · Conf {c['confiance']}% · Value {c['value']}%")
+                st.caption(
+                    f"• N°{c['num']} {c['nom']} ({c['course']}) "
+                    f"— Prob. modèle {c['prob']}% vs marché {c['prob_mkt']}% "
+                    f"· Value {c['value']:+.1f}%"
+                )
     else:
         medals = ["🥇", "🥈", "🥉"] + ["🔹"] * 10
         st.success(f"🔥 {len(gardes)} sélection(s) du jour")
 
-        def pill(label, val):
-            if val is None or val == 0:
-                return f'<span class="detail-pill">{label} 0</span>'
-            cls = "pos" if val > 0 else "neg"
-            sign = "+" if val > 0 else ""
-            return f'<span class="detail-pill {cls}">{label} {sign}{val}</span>'
-
         for i, c in enumerate(gardes):
-            is_fort = c["confiance"] >= 90
+            is_fort = c["value"] >= 10 and c["confiance"] >= 75
             badge   = '<span class="badge-fort">🔥 PARI FORT</span>' if is_fort else '<span class="badge-value">⚡ VALUE</span>'
             hippo   = f" · {c['hippo']}" if c.get("hippo") and c["hippo"] != "?" else ""
             d       = c.get("details", {})
@@ -587,19 +730,17 @@ if st.button("🔍 Analyser les courses du jour", use_container_width=True, type
                 pill("Forme",     d.get("forme")),
                 pill("Rég.",      d.get("reg")),
                 pill("Prog.",     d.get("prog")),
-                pill("Placé",     d.get("place")),
-                pill("Disc.",     d.get("disc")),
-                pill("Fraîcheur", d.get("fraicheur")),
-                pill("Alloc.",    d.get("allocation")),
-                pill("Partants",  d.get("partants")),
-                pill("Gains/an",  d.get("gains_an")),
-                pill("Sexe",      d.get("sexe")),
-                pill("Trainer",   d.get("entraineur")),
-                pill("Écurie",    d.get("ecurie")),
+                pill("Marché",    d.get("marche")),
+                pill("Drift",     d.get("drift")),
+                pill("Classe",    d.get("classe")),
+                pill("Perf.rel.", d.get("perf_rel")),
+                pill("RK",        d.get("rk")),
+                pill("Fraîcheur", d.get("fraich")),
                 pill("Déferré",   d.get("deferre")),
                 pill("Jockey",    d.get("jockey")),
+                pill("Trainer",   d.get("trainer")),
                 pill("Poids",     d.get("poids")),
-                pill("Œill.",     d.get("oeilleres")),
+                pill("Œill.",     d.get("oeil")),
             ])
 
             st.markdown(f"""
@@ -612,11 +753,11 @@ if st.button("🔍 Analyser les courses du jour", use_container_width=True, type
             """, unsafe_allow_html=True)
 
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Score",     c["score"])
-            col2.metric("Confiance", f"{c['confiance']}%")
-            col3.metric("Value",     f"+{c['value']}%" if c['value'] >= 0 else f"{c['value']}%")
-            col4.metric("Cote",      f"{c['cote']}×" if c['cote'] else "—")
+            col1.metric("Prob. modèle",  f"{c['prob']}%")
+            col2.metric("Prob. marché",  f"{c['prob_mkt']}%")
+            col3.metric("Avantage",      f"{c['value']:+.1f}%")
+            col4.metric("Cote",          f"{c['cote']}×" if c['cote'] else "—")
             st.markdown("---")
 
-    st.caption(f"Filtres : score ≥ {min_score} · confiance ≥ {min_conf}% · value ≥ {min_value}%")
-    st.caption(f"{len(candidats)} chevaux analysés au total")
+    st.caption(f"Filtres : value ≥ {min_value}% · confiance ≥ {min_conf}%")
+    st.caption(f"{len(candidats)} chevaux analysés · {len(courses)} courses")
