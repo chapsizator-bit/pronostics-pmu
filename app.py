@@ -215,10 +215,29 @@ def feat_forme_ecurie(cheval, tous_partants):
                 return 3
     return 0
 
-def feat_deferre(cheval):
-    deferre = str(cheval.get("deferre") or cheval.get("incident") or "").upper()
-    if "DEFER" in deferre or deferre in ["D", "DA", "DP", "DAP"]:
+def feat_deferre(cheval, disc):
+    """
+    Déferré = retrait des fers.
+    DAP / 4 PATTES = 4 pattes → signal fort (+4)
+    DA / ANT       = antérieurs seulement → signal moyen (+2)
+    DP / POST      = postérieurs seulement → signal faible (+1, courant en trot)
+    En trot, le DP est très fréquent et presque sans valeur prédictive.
+    """
+    raw = str(cheval.get("deferre") or cheval.get("incident") or "").upper()
+    if not raw or raw in ["", "NONE", "0", "NON"]:
+        return 0
+    # 4 pattes — signal le plus fort
+    if "DAP" in raw or "4 PATTE" in raw or "QUATRE" in raw:
         return 4
+    # Antérieurs seulement
+    if "DA" in raw or "ANT" in raw:
+        return 2
+    # Postérieurs seulement — très courant en trot, signal faible
+    if "DP" in raw or "POST" in raw:
+        return 1 if disc != "TROT" else 0
+    # Mention générique sans précision
+    if "DEFER" in raw or raw == "D":
+        return 2
     return 0
 
 def feat_jockey(cheval, tous_partants):
@@ -252,7 +271,13 @@ def feat_poids(cheval, disc):
     elif ecart < -2: return 2
     return 0
 
-def feat_oeilleres(cheval):
+def feat_oeilleres(cheval, disc):
+    """
+    En trot, les œillères sont standard et quasi-universelles — pas de signal.
+    En plat/obstacle, les œillères à la première (1ère fois) sont un signal fort.
+    """
+    if disc == "TROT":
+        return 0
     oeilleres = str(cheval.get("oeilleres") or cheval.get("equipement") or "").upper()
     if "PREMIER" in oeilleres or "1ER" in oeilleres:
         return 5
@@ -464,9 +489,9 @@ def compute_logit(cheval, course, tous_partants, disc):
     f_partants = feat_nb_partants(course)
     f_gains_an = feat_gains_annee(cheval)
     f_sexe    = feat_sexe(cheval)
-    f_deferre = feat_deferre(cheval)
+    f_deferre = feat_deferre(cheval, disc)
     f_poids   = feat_poids(cheval, disc)
-    f_oeil    = feat_oeilleres(cheval)
+    f_oeil    = feat_oeilleres(cheval, disc)
 
     # --- Écurie / connexion ---
     f_trainer = feat_entraineur(cheval, tous_partants)
