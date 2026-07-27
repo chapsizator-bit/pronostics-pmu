@@ -76,7 +76,8 @@
       "entraineur_id": null,
       "course": "R4C8",
       "hippo": "?",
-      "kelly_pct": 0
+      "score_2nd": 56.9,
+      "ecart_2nd": 6.7
     },
     {
       "nom": "ISTER MAN",
@@ -154,7 +155,8 @@
       "entraineur_id": null,
       "course": "R5C1",
       "hippo": "?",
-      "kelly_pct": 0
+      "score_2nd": 59.3,
+      "ecart_2nd": 0.7
     },
     {
       "nom": "JOURUNTOME",
@@ -232,7 +234,8 @@
       "entraineur_id": null,
       "course": "R5C3",
       "hippo": "?",
-      "kelly_pct": 0
+      "score_2nd": 53.0,
+      "ecart_2nd": 6.0
     },
     {
       "nom": "MELODICA BELLA",
@@ -310,7 +313,8 @@
       "entraineur_id": null,
       "course": "R4C5",
       "hippo": "?",
-      "kelly_pct": 0
+      "score_2nd": 57.2,
+      "ecart_2nd": 0.3
     },
     {
       "nom": "JUNIOR DU VIVIER",
@@ -388,7 +392,8 @@
       "entraineur_id": null,
       "course": "R5C2",
       "hippo": "?",
-      "kelly_pct": 0
+      "score_2nd": 53.8,
+      "ecart_2nd": 3.4
     },
     {
       "nom": "KELROC",
@@ -466,7 +471,8 @@
       "entraineur_id": null,
       "course": "R4C4",
       "hippo": "?",
-      "kelly_pct": 0
+      "score_2nd": 53.3,
+      "ecart_2nd": 2.3
     },
     {
       "nom": "MOLLY DE CHENU",
@@ -544,7 +550,8 @@
       "entraineur_id": null,
       "course": "R4C1",
       "hippo": "?",
-      "kelly_pct": 0
+      "score_2nd": 50.9,
+      "ecart_2nd": 4.4
     },
     {
       "nom": "LYS GEMA",
@@ -622,7 +629,8 @@
       "entraineur_id": null,
       "course": "R4C6",
       "hippo": "?",
-      "kelly_pct": 0
+      "score_2nd": 52.0,
+      "ecart_2nd": 2.5
     },
     {
       "nom": "LIVE ON",
@@ -700,7 +708,8 @@
       "entraineur_id": null,
       "course": "R5C7",
       "hippo": "?",
-      "kelly_pct": 0
+      "score_2nd": 52.9,
+      "ecart_2nd": 0.8
     },
     {
       "nom": "KING DE JOUDES",
@@ -778,7 +787,8 @@
       "entraineur_id": null,
       "course": "R5C6",
       "hippo": "?",
-      "kelly_pct": 0
+      "score_2nd": 53.2,
+      "ecart_2nd": 0.2
     }
   ],
   "candidats": [
@@ -858,7 +868,8 @@
       "entraineur_id": null,
       "course": "R4C1",
       "hippo": "?",
-      "kelly_pct": 0
+      "score_2nd": 50.9,
+      "ecart_2nd": 4.4
     },
     {
       "nom": "MASSA DAIRPET",
@@ -2630,7 +2641,8 @@
       "entraineur_id": null,
       "course": "R4C4",
       "hippo": "?",
-      "kelly_pct": 0
+      "score_2nd": 53.3,
+      "ecart_2nd": 2.3
     },
     {
       "nom": "KAZA DU TRIO",
@@ -3786,7 +3798,8 @@
       "entraineur_id": null,
       "course": "R4C5",
       "hippo": "?",
-      "kelly_pct": 0
+      "score_2nd": 57.2,
+      "ecart_2nd": 0.3
     },
     {
       "nom": "MALABAR MAGO",
@@ -4018,7 +4031,8 @@
       "entraineur_id": null,
       "course": "R4C6",
       "hippo": "?",
-      "kelly_pct": 0
+      "score_2nd": 52.0,
+      "ecart_2nd": 2.5
     },
     {
       "nom": "LODEN D'HERFRAIE",
@@ -5867,7 +5881,8 @@
       "entraineur_id": null,
       "course": "R4C8",
       "hippo": "?",
-      "kelly_pct": 0
+      "score_2nd": 56.9,
+      "ecart_2nd": 6.7
     },
     {
       "nom": "GLAMOUR YOMA",
@@ -6715,7 +6730,8 @@
       "entraineur_id": null,
       "course": "R5C1",
       "hippo": "?",
-      "kelly_pct": 0
+      "score_2nd": 59.3,
+      "ecart_2nd": 0.7
     },
     {
       "nom": "FLOREAL",
@@ -7640,7 +7656,8 @@
       "entraineur_id": null,
       "course": "R5C2",
       "hippo": "?",
-      "kelly_pct": 0
+      "score_2nd": 53.8,
+      "ecart_2nd": 3.4
     },
     {
       "nom": "KELLY GEDE",
@@ -7949,7 +7966,8 @@
       "entraineur_id": null,
       "course": "R5C3",
       "hippo": "?",
-      "kelly_pct": 0
+      "score_2nd": 53.0,
+      "ecart_2nd": 6.0
     },
     {
       "nom": "JOLI MEC D'AMOUR",
@@ -9875,7 +9893,8 @@
       "entraineur_id": null,
       "course": "R5C6",
       "hippo": "?",
-      "kelly_pct": 0
+      "score_2nd": 53.2,
+      "ecart_2nd": 0.2
     },
     {
       "nom": "LOLITA DE L'ETOILE",
@@ -10723,7 +10742,8 @@
       "entraineur_id": null,
       "course": "R5C7",
       "hippo": "?",
-      "kelly_pct": 0
+      "score_2nd": 52.9,
+      "ecart_2nd": 0.8
     },
     {
       "nom": "LLUC DES BOSC",
@@ -139575,6 +139595,6 @@
       }
     ]
   ],
-  "heure": "05:13",
+  "heure": "05:17",
   "date": "27072026"
 }
