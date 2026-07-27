@@ -2414,6 +2414,15 @@ if force:
 
 # Charger depuis GitHub si pas en session
 cached = get_cached_sel()
+
+# Si l'utilisateur clique "Analyser" sans forcer → vérifier d'abord GitHub
+# pour ne jamais recalculer sur des données API fraîches de fin de journée.
+if lancer and not force and not cached:
+    gh_data = load_selections_github()
+    if gh_data and gh_data.get("date") == date_str_cible:
+        set_cached_sel({**gh_data, "github_saved": True})
+        cached = get_cached_sel()
+
 if cached and cached.get("date") == date_str_cible and not force:
     github_ok = "💾 GitHub" if cached.get("github_saved") else "⚠️ session"
     label_cache = "demain" if analyse_demain else "aujourd'hui"
