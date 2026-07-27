@@ -1053,13 +1053,8 @@ def feat_signal_mission(cheval, course, tous_partants):
             signaux += 1
             details_signal.append("forme↑")
 
-    # Signal 2 : drift de cote (marché mise dessus)
-    ci = safe_float(cheval.get("coteInitiale"))
-    rapport = cheval.get("dernierRapportDirect") or {}
-    cf = safe_float(rapport.get("rapport")) if isinstance(rapport, dict) else None
-    if ci and cf and ci > 0 and (ci - cf) / ci > 0.12:
-        signaux += 1
-        details_signal.append("drift↓")
+    # Signal 2 : drift de cote — SUPPRIMÉ (cote live change toute la journée)
+    # Ce signal rendait le score instable entre 8h et 16h
 
     # Signal 3 : baisse de classe
     bc = feat_baisse_de_classe(cheval, course)
@@ -1602,7 +1597,8 @@ def feat_favori_recent(cheval):
     Proxy : si la cote actuelle est faible + bon taux de victoires = favori régulier.
     """
     if not isinstance(cheval, dict): return 0
-    cote = safe_float((cheval.get("dernierRapportDirect") or {}).get("rapport")) or            safe_float(cheval.get("coteInitiale"))
+    # Utilise uniquement la cote d'ouverture (stable toute la journée)
+    cote = safe_float(cheval.get("coteInitiale"))
     if not cote: return 0
     total = safe_int(cheval.get("nombreCourses"), 0)
     vict  = safe_int(cheval.get("nombreVictoires"), 0)
@@ -1739,13 +1735,14 @@ def feat_penalite_jument_favorite(cheval, tous_partants):
     is_jument = "JUMENT" in sexe or sexe in ["F", "M", "MF"]
     if not is_jument: return 0
 
-    cote = safe_float((cheval.get("dernierRapportDirect") or {}).get("rapport")) or            safe_float(cheval.get("coteInitiale"))
+    # Utilise uniquement la cote d'ouverture (stable toute la journée)
+    cote = safe_float(cheval.get("coteInitiale"))
     if not cote: return 0
 
     cotes = []
     for p in (tous_partants or []):
         if not isinstance(p, dict): continue
-        c = safe_float((p.get("dernierRapportDirect") or {}).get("rapport")) or             safe_float(p.get("coteInitiale"))
+        c = safe_float(p.get("coteInitiale"))
         if c: cotes.append(c)
 
     if not cotes: return 0
@@ -1966,15 +1963,15 @@ def compute_logit(cheval, course, tous_partants, disc):
     f_place   = feat_ratio_place(cheval)    # 0-8
     f_tx_vict = feat_taux_victoires(cheval) # 0-10
 
-    # --- Marché (poids ~0.35) ---
-    cote      = safe_float((cheval.get("dernierRapportDirect") or {}).get("rapport")) or \
-                safe_float(cheval.get("coteInitiale"))
+    # --- Marché (info uniquement, non utilisé dans le logit) ---
+    # On utilise uniquement coteInitiale pour éviter toute instabilité intra-journée
+    cote      = safe_float(cheval.get("coteInitiale"))
     f_marche  = clamp(1 / cote * 25, 0, 25) if cote else 0
 
-    # Pour un débutant : on neutralise la forme (inconnue) et on donne
-    # plus de poids au marché — c'est lui qui intègre l'info d'entraînement.
+    # Pour un débutant : on neutralise la forme (inconnue).
+    # On n'ancre plus sur la cote (qui changerait le score en cours de journée).
     if est_debutant:
-        f_forme = f_marche * 0.4   # ancre la forme sur la cote
+        f_forme = 0   # forme inconnue = score neutre (stable toute la journée)
         f_reg   = 0
         f_prog  = 0
         f_place = 0
