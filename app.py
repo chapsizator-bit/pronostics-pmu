@@ -2461,8 +2461,11 @@ if cached and cached.get("date") == date_str_cible and not force:
             col1, col2, col3 = st.columns(3)
             col1.metric("Score Benter", f"{c['logit']}")
             col2.metric("Cote (info)", f"{c['cote']}×" if c.get("cote") else "—")
-            kelly_val = c.get("kelly_pct", 0)
-            col3.metric("Mise Kelly", f"{kelly_val}%" if kelly_val > 0 else "—")
+            s2 = c.get("score_2nd")
+            ec = c.get("ecart_2nd")
+            col3.metric("Score 2ème", f"{s2}" if s2 is not None else "—",
+                        delta=f"+{ec} pts" if ec is not None else None,
+                        help="Score Benter du 2ème cheval de la course. Plus l'écart est grand, plus l'avantage est net.")
             # Paris conseillés
             course_id = c.get("course","")
             base_num  = c.get("num")
@@ -2597,19 +2600,16 @@ elif lancer:
         if len(gardes) >= max_sel:
             break
 
-    # Calcul de la mise Kelly pour chaque garde
-    # Fi = (Pi*Ri - 1) / (Ri - 1)  si Pi > 1/Ri, sinon ne pas jouer
-    BUDGET_KELLY = 100  # base 100€ pour le calcul, affiché en %
+    # Score du 2ème cheval de chaque course (pour évaluer l'écart)
     for c in gardes:
-        cote_k = c.get("cote")
-        prob_k = (c.get("prob") or 0) / 100  # prob modèle en proportion
-        if cote_k and cote_k > 1 and prob_k > 1 / cote_k:
-            ri = cote_k
-            fi = (prob_k * ri - 1) / (ri - 1)
-            fi = max(0, min(fi, 0.25))  # plafonné à 25% du budget par sécurité
-            c["kelly_pct"] = round(fi * 100, 1)
-        else:
-            c["kelly_pct"] = 0
+        course_id = c.get("course", "")
+        mon_logit = c.get("logit", 0)
+        autres = [
+            p["logit"] for p in candidats
+            if p.get("course") == course_id and p.get("num") != c.get("num")
+        ]
+        c["score_2nd"] = round(max(autres), 1) if autres else None
+        c["ecart_2nd"] = round(mon_logit - c["score_2nd"], 1) if c["score_2nd"] is not None else None
     # Figer les sélections pour la journée (stable malgré fluctuations cotes)
     github_saved = save_selections_github({"gardes": gardes, "candidats": candidats, "courses": courses, "heure": datetime.now().strftime("%H:%M"), "date": date_str_cible})
     set_cached_sel({"gardes": gardes, "candidats": candidats, "courses": courses, "heure": datetime.now().strftime("%H:%M"), "date": date_str_cible, "github_saved": github_saved})
@@ -2701,9 +2701,11 @@ elif lancer:
             col1, col2, col3 = st.columns(3)
             col1.metric("Score Benter", f"{c['logit']}")
             col2.metric("Cote (info)", f"{c['cote']}×" if c.get('cote') else "—")
-            kelly_val = c.get("kelly_pct", 0)
-            col3.metric("Mise Kelly", f"{kelly_val}%" if kelly_val > 0 else "—",
-                       help="% du budget à miser selon le critère de Kelly (plafonné à 25%)")
+            s2 = c.get("score_2nd")
+            ec = c.get("ecart_2nd")
+            col3.metric("Score 2ème", f"{s2}" if s2 is not None else "—",
+                        delta=f"+{ec} pts" if ec is not None else None,
+                        help="Score Benter du 2ème cheval de la course. Plus l'écart est grand, plus l'avantage est net.")
 
             # ── PARIS CONSEILLÉS ─────────────────────────────────
             # Trouver les partenaires pour la base (cote 4-22, value positive)
