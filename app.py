@@ -3251,69 +3251,65 @@ elif lancer:
 
 # ========== ARCHIVES ==========
 st.markdown("---")
-st.markdown("## 📁 Archives des sélections")
-st.caption("Consultez les sélections des jours précédents telles qu'elles ont été figées le matin.")
 
-@st.cache_data(ttl=120)
-def load_archive():
-    return load_selections_github()
+with st.expander("📁 Archives des sélections", expanded=False):
+    st.caption("Consultez les sélections des jours précédents telles qu'elles ont été figées le matin.")
 
-archive_all = load_archive()
+    archive_all = load_selections_github()
 
-if not archive_all:
-    st.info("Aucune archive disponible pour l'instant.")
-else:
-    # Trier les dates disponibles (format DDMMYYYY) du plus récent au plus ancien
-    def parse_archive_date(d):
+    def _parse_arch_date(d):
         try:
             return datetime.strptime(d, "%d%m%Y")
         except Exception:
             return datetime.min
 
-    dates_dispo = sorted(archive_all.keys(), key=parse_archive_date, reverse=True)
-    # Formatter pour l'affichage
-    def fmt_date(d):
+    def _fmt_arch_date(d):
         try:
             return datetime.strptime(d, "%d%m%Y").strftime("%A %d %B %Y")
         except Exception:
             return d
 
-    labels = [fmt_date(d) for d in dates_dispo]
-    choix = st.selectbox("📅 Choisir une date", labels, key="archive_date_select")
-    date_key = dates_dispo[labels.index(choix)]
-    day = archive_all[date_key]
-    gardes_arch = day.get("gardes", [])
-    heure_arch  = day.get("heure", "?")
-
-    st.caption(f"Analyse figée à {heure_arch} · {len(gardes_arch)} sélection(s)")
-
-    if not gardes_arch:
-        st.warning("Aucune sélection pour cette journée.")
+    if not archive_all:
+        st.info("Aucune archive disponible pour l'instant.")
     else:
-        for c in gardes_arch:
-            is_fort = c.get("logit", 0) >= 60
-            badge_txt = "🔥 PARI FORT" if is_fort else "⚡ VALUE"
-            badge_color = "#c0392b" if is_fort else "#1a472a"
-            s2   = c.get("score_2nd")
-            ec   = c.get("ecart_2nd")
-            n2   = c.get("num_2nd")
-            nom2 = c.get("nom_2nd", "")
-            conf = c.get("confiance")
-            st.markdown(f"""
-            <div style="background:#12121f;border:1px solid #2d2d4e;border-radius:12px;padding:16px;margin-bottom:12px">
-              <div style="font-size:1rem;font-weight:800;color:#f1c40f;margin-bottom:4px">
-                N°{c.get('num')} {c.get('nom','')}
-              </div>
-              <div style="color:#94a3b8;font-size:0.8rem;margin-bottom:8px">
-                {c.get('course','')} · TROT
-              </div>
-              <span style="background:{badge_color};color:#fff;padding:3px 10px;border-radius:5px;font-size:0.75rem;font-weight:700">{badge_txt}</span>
-              <div style="margin-top:10px;display:flex;gap:24px;flex-wrap:wrap">
-                <div><div style="font-size:1.4rem;font-weight:800;color:#e2e8f0">{c.get('logit','—')}</div><div style="color:#64748b;font-size:0.72rem">Score Benter</div></div>
-                <div><div style="font-size:1.4rem;font-weight:800;color:#e2e8f0">{s2 if s2 is not None else '—'}</div>
-                  <div style="color:#64748b;font-size:0.72rem">Score 2ème{f" (N°{n2} {nom2[:14]})" if n2 else ""}</div>
-                  {"<div style='color:#4ade80;font-size:0.8rem'>▲ +" + str(ec) + " pts</div>" if ec is not None else ""}
-                </div>
-                {"<div><div style='font-size:1.4rem;font-weight:800;color:#e2e8f0'>" + str(conf) + "%</div><div style='color:#64748b;font-size:0.72rem'>Confiance</div></div>" if conf is not None else ""}
-              </div>
-            </div>""", unsafe_allow_html=True)
+        dates_dispo = sorted(archive_all.keys(), key=_parse_arch_date, reverse=True)
+        labels = [_fmt_arch_date(d) for d in dates_dispo]
+        choix = st.selectbox("📅 Choisir une date", labels, key="archive_date_select")
+        date_key = dates_dispo[labels.index(choix)]
+        day = archive_all[date_key]
+        gardes_arch = day.get("gardes", [])
+        heure_arch  = day.get("heure", "?")
+
+        st.caption(f"Analyse figée à {heure_arch} · {len(gardes_arch)} sélection(s)")
+
+        if not gardes_arch:
+            st.warning("Aucune sélection pour cette journée.")
+        else:
+            for c in gardes_arch:
+                is_fort    = c.get("logit", 0) >= 60
+                badge_txt   = "🔥 PARI FORT" if is_fort else "⚡ VALUE"
+                badge_color = "#c0392b" if is_fort else "#1a472a"
+                s2   = c.get("score_2nd")
+                ec   = c.get("ecart_2nd")
+                n2   = c.get("num_2nd")
+                nom2 = c.get("nom_2nd", "")[:14]
+                conf = c.get("confiance")
+                second_label = f"N°{n2} {nom2}" if n2 is not None else ""
+                ecart_html   = f"<div style='color:#4ade80;font-size:0.8rem'>▲ +{ec} pts</div>" if ec is not None else ""
+                conf_html    = (f"<div><div style='font-size:1.4rem;font-weight:800;color:#e2e8f0'>{conf}%</div>"
+                                f"<div style='color:#64748b;font-size:0.72rem'>Confiance</div></div>") if conf is not None else ""
+                st.markdown(f"""
+                <div style="background:#12121f;border:1px solid #2d2d4e;border-radius:12px;padding:16px;margin-bottom:12px">
+                  <div style="font-size:1rem;font-weight:800;color:#f1c40f;margin-bottom:4px">N°{c.get('num')} {c.get('nom','')}</div>
+                  <div style="color:#94a3b8;font-size:0.8rem;margin-bottom:8px">{c.get('course','')} · TROT</div>
+                  <span style="background:{badge_color};color:#fff;padding:3px 10px;border-radius:5px;font-size:0.75rem;font-weight:700">{badge_txt}</span>
+                  <div style="margin-top:10px;display:flex;gap:24px;flex-wrap:wrap">
+                    <div><div style="font-size:1.4rem;font-weight:800;color:#e2e8f0">{c.get('logit','—')}</div><div style="color:#64748b;font-size:0.72rem">Score Benter</div></div>
+                    <div>
+                      <div style="font-size:1.4rem;font-weight:800;color:#e2e8f0">{s2 if s2 is not None else '—'}</div>
+                      <div style="color:#64748b;font-size:0.72rem">Score 2ème {second_label}</div>
+                      {ecart_html}
+                    </div>
+                    {conf_html}
+                  </div>
+                </div>""", unsafe_allow_html=True)
