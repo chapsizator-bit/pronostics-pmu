@@ -153,6 +153,74 @@ def pmu_get(path):
     with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
         return json.loads(r.read().decode("utf-8"))
 
+# ============= PRESSE EQUIDIA ==============
+_JOURS_FR  = ["lundi","mardi","mercredi","jeudi","vendredi","samedi","dimanche"]
+_MOIS_FR   = ["janvier","février","mars","avril","mai","juin","juillet",
+               "août","septembre","octobre","novembre","décembre"]
+
+def _date_slug(d):
+    return _JOURS_FR[d.weekday()], str(d.day), _MOIS_FR[d.month - 1]
+
+def _fetch_html(url):
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.read().decode("utf-8", errors="ignore"), None
+    except Exception as e:
+        return None, str(e)
+
+def _html_to_text(html):
+    text = re.sub(r'<script[^>]*>.*?</script>', ' ', html, flags=re.DOTALL)
+    text = re.sub(r'<style[^>]*>.*?</style>',  ' ', text,  flags=re.DOTALL)
+    text = re.sub(r'<br\s*/?>', '\n', text)
+    text = re.sub(r'</p>',      '\n', text)
+    text = re.sub(r'<[^>]+>',   ' ',  text)
+    text = re.sub(r'[ \t]+',    ' ',  text)
+    text = re.sub(r'\n{3,}',   '\n\n', text)
+    return text.strip()
+
+def _extract_article_body(text):
+    """Garde uniquement le corps utile : après 'Retour aux actualités' et avant
+    les liens 'À lire aussi / Le direct'."""
+    start = text.find("Retour aux actualités")
+    if start != -1:
+        text = text[start + len("Retour aux actualités"):]
+    for marker in ["À lire aussi", "Le direct", "Commentaires", "Lire la charte"]:
+        idx = text.find(marker)
+        if idx != -1:
+            text = text[:idx]
+    return text.strip()
+
+@st.cache_data(ttl=1800)  # cache 30 min — les articles ne changent pas en cours de journée
+def fetch_equidia_presse(date_obj_ts):
+    """Récupère les 3 articles Equidia prédictibles du jour.
+    date_obj_ts : timestamp (int) pour que st.cache_data puisse hasher."""
+    d = datetime.fromtimestamp(date_obj_ts).date()
+    jour, num, mois = _date_slug(d)
+    slug_date = f"{jour}-{num}-{mois}"
+
+    articles_config = [
+        ("📣 Paroles de pros",       f"paroles-de-pros-de-{slug_date}"),
+        ("🔎 Repérés en piste",      f"les-reperes-en-piste-pour-le-{slug_date}"),
+        ("⚠️ 5 pénos du jour",       f"les-5-penos-du-{slug_date}"),
+    ]
+
+    resultats = []
+    base = "https://www.equidia.fr/articles/actualite/"
+    for titre, slug in articles_config:
+        html, err = _fetch_html(base + slug)
+        if err or not html:
+            continue
+        text = _html_to_text(html)
+        body = _extract_article_body(text)
+        if len(body) < 80:
+            continue
+        resultats.append({"titre": titre, "body": body, "url": base + slug})
+    return resultats
+
 def today():
     return datetime.now().strftime("%d%m%Y")
 
@@ -2759,6 +2827,60 @@ elif lancer:
 
     st.caption(f"Score Benter ≥ {min_score} · {len(candidats)} chevaux analysés · Cote = info seulement")
     st.caption(f"Tri : Score Benter objectif · Confiance ≥ {min_conf}% · Cote = information uniquement · {len(candidats)} chevaux analysés")
+
+    # ========== PRESSE DU JOUR (Equidia) ==========
+    st.markdown("---")
+    st.markdown("## 📰 Presse du jour — Equidia")
+    st.caption("Articles récupérés automatiquement · Actualisés toutes les 30 min")
+
+    # Noms des chevaux sélectionnés (pour surligner les mentions)
+    noms_gardes = set()
+    try:
+        for g in gardes:
+            nom = g.get("nom", "")
+            if nom and len(nom) > 3:
+                noms_gardes.add(nom.upper())
+                # Ajouter aussi le premier mot (ex: "KATCHI" de "KATCHI QUICK")
+                mots = nom.upper().split()
+                if mots:
+                    noms_gardes.add(mots[0])
+    except Exception:
+        pass
+
+    import datetime as _dt
+    ts_today = int(_dt.datetime.combine(date_cible.date() if hasattr(date_cible, 'date') else date_cible, _dt.time()).timestamp())
+
+    with st.spinner("Chargement des articles Equidia…"):
+        articles = fetch_equidia_presse(ts_today)
+
+    if not articles:
+        st.info("Aucun article Equidia disponible pour aujourd'hui (les articles paraissent généralement à partir de 6h).")
+    else:
+        for art in articles:
+            # Vérifier si un de nos chevaux est mentionné
+            body_up = art["body"].upper()
+            chevaux_mentionnes = [n for n in noms_gardes if n in body_up]
+            label = art["titre"]
+            if chevaux_mentionnes:
+                label += f"  🔥 *{', '.join(chevaux_mentionnes[:3])} mentionné(s)*"
+
+            with st.expander(label, expanded=bool(chevaux_mentionnes)):
+                # Affichage paragraphe par paragraphe
+                paragraphes = [p.strip() for p in art["body"].split("\n") if len(p.strip()) > 20]
+                for para in paragraphes:
+                    # Surligner les noms de nos chevaux
+                    para_display = para
+                    for nom in noms_gardes:
+                        if nom in para.upper():
+                            # Retrouver la casse originale et entourer
+                            idx = para.upper().find(nom)
+                            original = para[idx:idx+len(nom)]
+                            para_display = para_display.replace(
+                                original,
+                                f"**:orange[{original}]**"
+                            )
+                    st.markdown(para_display)
+                st.caption(f"[Lire sur Equidia →]({art['url']})")
 
     # ========== JOURNAL DE RÉSULTATS ==========
     st.markdown("---")
