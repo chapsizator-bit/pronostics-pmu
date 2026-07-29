@@ -22,17 +22,24 @@ SEL_RAW      = "https://raw.githubusercontent.com/chapsizator-bit/pronostics-pmu
 SEL_API      = "https://api.github.com/repos/chapsizator-bit/pronostics-pmu/contents/selections.json"
 
 def load_selections_github():
+    """Retourne un dict {date_str: {gardes, candidats, courses, heure, date}}.
+    Gère la migration de l'ancien format (objet unique avec clé 'date')."""
     try:
         req = urllib.request.Request(
             SEL_RAW + "?t=" + str(int(time.time())),
             headers={"User-Agent": "Mozilla/5.0"}
         )
         with urllib.request.urlopen(req, timeout=8) as r:
-            return json.loads(r.read().decode("utf-8"))
+            raw = json.loads(r.read().decode("utf-8"))
+        # Migration : ancien format = objet plat avec clé "date" au top-level
+        if isinstance(raw, dict) and "date" in raw and "gardes" in raw:
+            return {raw["date"]: raw}
+        return raw if isinstance(raw, dict) else {}
     except Exception:
-        return None
+        return {}
 
-def save_selections_github(data):
+def save_selections_github(archive_dict):
+    """Sauvegarde le dict complet {date_str: données} dans selections.json GitHub."""
     token = os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN")
     if not token:
         return False
@@ -50,7 +57,7 @@ def save_selections_github(data):
     except Exception:
         pass
     content_b64 = base64.b64encode(
-        json.dumps(data, ensure_ascii=False, indent=2).encode()
+        json.dumps(archive_dict, ensure_ascii=False, indent=2).encode()
     ).decode()
     payload = {"message": "selections: mise à jour", "content": content_b64}
     if sha:
@@ -2483,15 +2490,18 @@ if force:
 # Charger depuis GitHub si pas en session
 cached = get_cached_sel()
 
-# Si l'utilisateur clique "Analyser" sans forcer → vérifier d'abord GitHub
-# pour ne jamais recalculer sur des données API fraîches de fin de journée.
-if lancer and not force and not cached:
-    gh_data = load_selections_github()
-    if gh_data and gh_data.get("date") == date_str_cible:
-        set_cached_sel({**gh_data, "github_saved": True})
+# Vérifier GitHub : si des données du jour existent, les utiliser TOUJOURS
+# (même si ↺ Forcer a été pressé — le score est figé dès la 1ère analyse)
+if lancer and not cached:
+    gh_archive = load_selections_github()
+    if gh_archive and date_str_cible in gh_archive:
+        day_data = gh_archive[date_str_cible]
+        set_cached_sel({**day_data, "github_saved": True})
         cached = get_cached_sel()
+        if force:
+            st.warning("🔒 Analyse du jour déjà sauvegardée — scores chargés depuis GitHub. Les scores ne changent plus une fois l'analyse figée.")
 
-if cached and cached.get("date") == date_str_cible and not force:
+if cached and cached.get("date") == date_str_cible:
     github_ok = "💾 GitHub" if cached.get("github_saved") else "⚠️ session"
     label_cache = "demain" if analyse_demain else "aujourd'hui"
     st.markdown(
@@ -2539,9 +2549,13 @@ if cached and cached.get("date") == date_str_cible and not force:
             col1.metric("Score Benter", f"{c['logit']}")
             s2 = c.get("score_2nd")
             ec = c.get("ecart_2nd")
+            n2 = c.get("num_2nd")
+            nom2 = c.get("nom_2nd", "")
             col2.metric("Score 2ème", f"{s2}" if s2 is not None else "—",
                         delta=f"+{ec} pts" if ec is not None else None,
                         help="Score Benter du 2ème cheval de la course. Plus l'écart est grand, plus l'avantage est net.")
+            if n2 is not None:
+                col2.caption(f"N°{n2} {nom2[:18]}")
             st.markdown("---")
 elif lancer:
 
@@ -2655,19 +2669,29 @@ elif lancer:
         if len(gardes) >= max_sel:
             break
 
-    # Score du 2ème cheval de chaque course (pour évaluer l'écart)
+    # Score + identité du 2ème cheval de chaque course
     for c in gardes:
         course_id = c.get("course", "")
         mon_logit = c.get("logit", 0)
         autres = [
-            p["logit"] for p in candidats
+            p for p in candidats
             if p.get("course") == course_id and p.get("num") != c.get("num")
         ]
-        c["score_2nd"] = round(max(autres), 1) if autres else None
-        c["ecart_2nd"] = round(mon_logit - c["score_2nd"], 1) if c["score_2nd"] is not None else None
-    # Figer les sélections pour la journée (stable malgré fluctuations cotes)
-    github_saved = save_selections_github({"gardes": gardes, "candidats": candidats, "courses": courses, "heure": datetime.now().strftime("%H:%M"), "date": date_str_cible})
-    set_cached_sel({"gardes": gardes, "candidats": candidats, "courses": courses, "heure": datetime.now().strftime("%H:%M"), "date": date_str_cible, "github_saved": github_saved})
+        if autres:
+            second = max(autres, key=lambda p: p.get("logit", 0))
+            c["score_2nd"] = round(second["logit"], 1)
+            c["ecart_2nd"] = round(mon_logit - c["score_2nd"], 1)
+            c["num_2nd"]   = second.get("num")
+            c["nom_2nd"]   = second.get("nom", "")
+        else:
+            c["score_2nd"] = c["ecart_2nd"] = c["num_2nd"] = c["nom_2nd"] = None
+    # Figer les sélections pour la journée (archive multi-dates)
+    day_entry = {"gardes": gardes, "candidats": candidats, "courses": courses,
+                 "heure": datetime.now().strftime("%H:%M"), "date": date_str_cible}
+    gh_archive = load_selections_github() or {}
+    gh_archive[date_str_cible] = day_entry
+    github_saved = save_selections_github(gh_archive)
+    set_cached_sel({**day_entry, "github_saved": github_saved})
     st.session_state["gardes_du_jour"] = gardes
 
     st.divider()
@@ -2757,14 +2781,17 @@ elif lancer:
             col1.metric("Score Benter", f"{c['logit']}")
             s2 = c.get("score_2nd")
             ec = c.get("ecart_2nd")
+            n2 = c.get("num_2nd")
+            nom2 = c.get("nom_2nd", "")
             col2.metric("Score 2ème", f"{s2}" if s2 is not None else "—",
                         delta=f"+{ec} pts" if ec is not None else None,
                         help="Score Benter du 2ème cheval de la course. Plus l'écart est grand, plus l'avantage est net.")
+            if n2 is not None:
+                col2.caption(f"N°{n2} {nom2[:18]}")
 
             st.markdown("---")
 
-    st.caption(f"Score Benter ≥ {min_score} · {len(candidats)} chevaux analysés · Cote = info seulement")
-    st.caption(f"Tri : Score Benter objectif · Confiance ≥ {min_conf}% · Cote = information uniquement · {len(candidats)} chevaux analysés")
+    st.caption(f"Score Benter ≥ {min_score} · {len(candidats)} chevaux analysés")
 
     # ========== PRESSE DU JOUR (Equidia) ==========
     st.markdown("---")
@@ -3221,3 +3248,72 @@ elif lancer:
                         for e in erreurs_back[:10]: st.caption(f"• {e}")
 
             st.caption("⚠️ Limites : cotes API PMU (clôture) · 1u/pari simulé · Courses sans arrivée ignorées · 3 ans d'historique max")
+
+# ========== ARCHIVES ==========
+st.markdown("---")
+st.markdown("## 📁 Archives des sélections")
+st.caption("Consultez les sélections des jours précédents telles qu'elles ont été figées le matin.")
+
+@st.cache_data(ttl=120)
+def load_archive():
+    return load_selections_github()
+
+archive_all = load_archive()
+
+if not archive_all:
+    st.info("Aucune archive disponible pour l'instant.")
+else:
+    # Trier les dates disponibles (format DDMMYYYY) du plus récent au plus ancien
+    def parse_archive_date(d):
+        try:
+            return datetime.strptime(d, "%d%m%Y")
+        except Exception:
+            return datetime.min
+
+    dates_dispo = sorted(archive_all.keys(), key=parse_archive_date, reverse=True)
+    # Formatter pour l'affichage
+    def fmt_date(d):
+        try:
+            return datetime.strptime(d, "%d%m%Y").strftime("%A %d %B %Y")
+        except Exception:
+            return d
+
+    labels = [fmt_date(d) for d in dates_dispo]
+    choix = st.selectbox("📅 Choisir une date", labels, key="archive_date_select")
+    date_key = dates_dispo[labels.index(choix)]
+    day = archive_all[date_key]
+    gardes_arch = day.get("gardes", [])
+    heure_arch  = day.get("heure", "?")
+
+    st.caption(f"Analyse figée à {heure_arch} · {len(gardes_arch)} sélection(s)")
+
+    if not gardes_arch:
+        st.warning("Aucune sélection pour cette journée.")
+    else:
+        for c in gardes_arch:
+            is_fort = c.get("logit", 0) >= 60
+            badge_txt = "🔥 PARI FORT" if is_fort else "⚡ VALUE"
+            badge_color = "#c0392b" if is_fort else "#1a472a"
+            s2   = c.get("score_2nd")
+            ec   = c.get("ecart_2nd")
+            n2   = c.get("num_2nd")
+            nom2 = c.get("nom_2nd", "")
+            conf = c.get("confiance")
+            st.markdown(f"""
+            <div style="background:#12121f;border:1px solid #2d2d4e;border-radius:12px;padding:16px;margin-bottom:12px">
+              <div style="font-size:1rem;font-weight:800;color:#f1c40f;margin-bottom:4px">
+                N°{c.get('num')} {c.get('nom','')}
+              </div>
+              <div style="color:#94a3b8;font-size:0.8rem;margin-bottom:8px">
+                {c.get('course','')} · TROT
+              </div>
+              <span style="background:{badge_color};color:#fff;padding:3px 10px;border-radius:5px;font-size:0.75rem;font-weight:700">{badge_txt}</span>
+              <div style="margin-top:10px;display:flex;gap:24px;flex-wrap:wrap">
+                <div><div style="font-size:1.4rem;font-weight:800;color:#e2e8f0">{c.get('logit','—')}</div><div style="color:#64748b;font-size:0.72rem">Score Benter</div></div>
+                <div><div style="font-size:1.4rem;font-weight:800;color:#e2e8f0">{s2 if s2 is not None else '—'}</div>
+                  <div style="color:#64748b;font-size:0.72rem">Score 2ème{f" (N°{n2} {nom2[:14]})" if n2 else ""}</div>
+                  {"<div style='color:#4ade80;font-size:0.8rem'>▲ +" + str(ec) + " pts</div>" if ec is not None else ""}
+                </div>
+                {"<div><div style='font-size:1.4rem;font-weight:800;color:#e2e8f0'>" + str(conf) + "%</div><div style='color:#64748b;font-size:0.72rem'>Confiance</div></div>" if conf is not None else ""}
+              </div>
+            </div>""", unsafe_allow_html=True)
