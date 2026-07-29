@@ -2535,35 +2535,13 @@ if cached and cached.get("date") == date_str_cible and not force:
               <div style="margin:6px 0">{badge}</div>
               <div class="detail-grid">{pills}</div>
             </div>""", unsafe_allow_html=True)
-            col1, col2, col3 = st.columns(3)
+            col1, col2 = st.columns(2)
             col1.metric("Score Benter", f"{c['logit']}")
-            col2.metric("Cote (info)", f"{c['cote']}×" if c.get("cote") else "—")
             s2 = c.get("score_2nd")
             ec = c.get("ecart_2nd")
-            col3.metric("Score 2ème", f"{s2}" if s2 is not None else "—",
+            col2.metric("Score 2ème", f"{s2}" if s2 is not None else "—",
                         delta=f"+{ec} pts" if ec is not None else None,
                         help="Score Benter du 2ème cheval de la course. Plus l'écart est grand, plus l'avantage est net.")
-            # Paris conseillés
-            course_id = c.get("course","")
-            base_num  = c.get("num")
-            partenaires = sorted(
-                [p for p in candidats
-                 if p.get("course") == course_id
-                 and p.get("num") != base_num
-                 and p.get("cote") and 4 <= p["cote"] <= 22
-                 and p.get("prob_mkt",0) > 0.5],
-                key=lambda x: x.get("value",0), reverse=True
-            )[:4]
-            if partenaires:
-                parts_couple = " / ".join([f"N°{p['num']} {p['nom'][:14]} ({p['cote']})" for p in partenaires[:3]])
-                parts_trio   = " / ".join([f"N°{p['num']} {p['nom'][:14]} ({p['cote']})" for p in partenaires[:4]])
-                st.markdown(f"""
-                <div style="background:#0d1f0d;border:1px solid #1a3a1a;border-radius:10px;padding:14px;margin-bottom:8px">
-                  <div style="font-size:11px;color:#4ade80;font-weight:800;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">🎯 Paris conseillés</div>
-                  <div style="margin-bottom:10px"><span style="color:#fbbf24;font-weight:800;font-size:13px">BASE : N°{base_num} {c['nom'][:18]} ({c.get('cote','?')})</span></div>
-                  <div style="margin-bottom:8px"><span style="color:#60a5fa;font-weight:700;font-size:12px">🔗 Couplé Gagnant :</span><br/><span style="color:#e2e8f0;font-size:12px">Base / {parts_couple}</span></div>
-                  <div><span style="color:#a78bfa;font-weight:700;font-size:12px">🎰 Trio :</span><br/><span style="color:#e2e8f0;font-size:12px">Base / {parts_trio}</span></div>
-                </div>""", unsafe_allow_html=True)
             st.markdown("---")
 elif lancer:
 
@@ -2775,53 +2753,13 @@ elif lancer:
             </div>
             """, unsafe_allow_html=True)
 
-            col1, col2, col3 = st.columns(3)
+            col1, col2 = st.columns(2)
             col1.metric("Score Benter", f"{c['logit']}")
-            col2.metric("Cote (info)", f"{c['cote']}×" if c.get('cote') else "—")
             s2 = c.get("score_2nd")
             ec = c.get("ecart_2nd")
-            col3.metric("Score 2ème", f"{s2}" if s2 is not None else "—",
+            col2.metric("Score 2ème", f"{s2}" if s2 is not None else "—",
                         delta=f"+{ec} pts" if ec is not None else None,
                         help="Score Benter du 2ème cheval de la course. Plus l'écart est grand, plus l'avantage est net.")
-
-            # ── PARIS CONSEILLÉS ─────────────────────────────────
-            # Trouver les partenaires pour la base (cote 4-22, value positive)
-            course_id = c.get("course","")
-            base_num  = c.get("num")
-            partenaires = sorted(
-                [
-                    p for p in candidats
-                    if p.get("course") == course_id
-                    and p.get("num") != base_num
-                    and p.get("cote") and 4 <= p["cote"] <= 22
-                    and p.get("prob_mkt", 0) > 0.5
-                ],
-                key=lambda x: x.get("value", 0),
-                reverse=True
-            )[:4]
-
-            if partenaires:
-                base_str = f"N°{base_num} {c['nom'][:18]} ({c.get('cote','?')})"
-                parts_couple = " / ".join([f"N°{p['num']} {p['nom'][:14]} ({p['cote']})" for p in partenaires[:3]])
-                parts_trio   = " / ".join([f"N°{p['num']} {p['nom'][:14]} ({p['cote']})" for p in partenaires[:4]])
-                st.markdown(f"""
-                <div style="background:#0d1f0d;border:1px solid #1a3a1a;border-radius:10px;padding:14px;margin-bottom:8px">
-                  <div style="font-size:11px;color:#4ade80;font-weight:800;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">🎯 Paris conseillés</div>
-                  <div style="margin-bottom:10px">
-                    <span style="color:#fbbf24;font-weight:800;font-size:13px">BASE : {base_str}</span>
-                  </div>
-                  <div style="margin-bottom:8px">
-                    <span style="color:#60a5fa;font-weight:700;font-size:12px">🔗 Couplé Gagnant :</span><br/>
-                    <span style="color:#e2e8f0;font-size:12px">Base / {parts_couple}</span>
-                  </div>
-                  <div>
-                    <span style="color:#a78bfa;font-weight:700;font-size:12px">🎰 Trio :</span><br/>
-                    <span style="color:#e2e8f0;font-size:12px">Base / {parts_trio}</span>
-                  </div>
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.caption("💡 Pas assez de partenaires (cote 4-22) dans cette course.")
 
             st.markdown("---")
 
