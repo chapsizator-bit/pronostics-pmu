@@ -2512,6 +2512,18 @@ if cached and cached.get("date") == date_str_cible:
     gardes    = cached["gardes"]
     candidats = cached["candidats"]
     courses   = cached["courses"]
+    # Rétrocompat : recalculer num_2nd/nom_2nd si absent (anciennes sauvegardes)
+    for c in gardes:
+        if c.get("num_2nd") is None and candidats:
+            course_id = c.get("course", "")
+            autres = [p for p in candidats if p.get("course") == course_id and p.get("num") != c.get("num")]
+            if autres:
+                second = max(autres, key=lambda p: p.get("logit", 0))
+                c["num_2nd"]  = second.get("num")
+                c["nom_2nd"]  = second.get("nom", "")
+                if c.get("score_2nd") is None:
+                    c["score_2nd"] = round(second.get("logit", 0), 1)
+                    c["ecart_2nd"] = round(c.get("logit", 0) - c["score_2nd"], 1)
     # Affichage depuis le cache GitHub
     if not gardes:
         st.warning("❌ Aucun pari — aucun cheval ne passe les filtres.")
